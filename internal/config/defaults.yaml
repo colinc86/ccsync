@@ -1,0 +1,61 @@
+profiles:
+  default:
+    description: "Primary config"
+
+jsonFiles:
+  "~/.claude.json":
+    include:
+      - $.autoUpdates
+      - $.theme
+      - $.installMethod
+      - $.companion
+      - $.mcpServers
+      - $.enabledPlugins
+      - $.claudeAiMcpEverConnected
+    exclude:
+      - $.cachedGrowthBookFeatures
+      - $.projects
+      - $.numStartups
+      - $.userID
+      - $.claudeCodeFirstTokenDate
+    redact:
+      - $.mcpServers.*.env.*
+      - $..apiKey
+      - $..token
+      - $..secret
+      - $..password
+  "~/.claude/settings.json":
+    include:
+      - $
+    redact:
+      - $.statusLine.command
+
+defaultSyncignore: |
+  # ephemeral / machine-local
+  .current-session-id
+  .DS_Store
+  .lock
+  cache-*.dat
+  cache-*.last
+  sparkline-*.dat
+  sparkline-*.last
+  statusline-mode-*
+  statusline-color-*
+  statusline-auto-sticky-*
+  statusline-command.sh
+  debug/
+  file-history/
+  session-env/
+  sessions/
+  paste-cache/
+  cache/
+  telemetry/
+  shell-snapshots/
+  plugins/
+  projects/
+  tasks/
+  todos/
+  settings.local.json
+  # large work products — opt back in per profile if desired
+  research/
+  plans/

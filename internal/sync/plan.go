@@ -1,0 +1,59 @@
+// Package sync orchestrates the end-to-end ccsync flow: discover → compare →
+// merge-safe → snapshot → write → commit → push. Conflicts are detected but
+// never auto-resolved here; the TUI consumes Plan.Conflicts to drive per-file
+// resolution.
+package sync
+
+import (
+	"github.com/colinc86/ccsync/internal/manifest"
+	"github.com/colinc86/ccsync/internal/merge"
+)
+
+// FileAction is the per-file outcome decided by the sync engine.
+type FileAction struct {
+	Path     string          // repo-relative (e.g. profiles/default/claude/foo)
+	LocalAbs string          // absolute path in user's ~/.claude or "" for .claude.json
+	Action   manifest.Action // Decide() output
+}
+
+// FileConflict bundles the per-file merge conflicts.
+type FileConflict struct {
+	Path      string
+	Conflicts []merge.Conflict
+}
+
+// Plan is the computed change set.
+type Plan struct {
+	Actions   []FileAction
+	Conflicts []FileConflict
+}
+
+// Summary returns +<added> ~<modified> -<deleted> counts.
+func (p Plan) Summary() (added, modified, deleted int) {
+	for _, a := range p.Actions {
+		switch a.Action {
+		case manifest.ActionAddLocal, manifest.ActionAddRemote:
+			added++
+		case manifest.ActionPull, manifest.ActionPush:
+			modified++
+		case manifest.ActionDeleteLocal, manifest.ActionDeleteRemote:
+			deleted++
+		}
+	}
+	return
+}
+
+// Result is the output of Run.
+type Result struct {
+	Plan           Plan
+	CommitSHA      string
+	SnapshotID     string
+	MissingSecrets []string // JSON paths whose keychain value was missing on pull
+}
+
+// Event is a progress update emitted during Run.
+type Event struct {
+	Stage   string
+	Message string
+	Path    string
+}

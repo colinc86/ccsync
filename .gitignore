@@ -1,0 +1,21 @@
+# Build artifacts
+/ccsync
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+*.prof
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Claude Code — never sync machine-local project settings
+.claude/settings.local.json
