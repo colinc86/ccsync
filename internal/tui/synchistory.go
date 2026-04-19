@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/snapshot"
+	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
 )
 
@@ -100,17 +102,40 @@ func (m *syncHistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			it := m.items[m.cursor]
-			if it.kind != historySnapshot {
-				m.message = "rollback is v1-only for snapshots; use git to revert commits"
+			if it.kind == historySnapshot {
+				err := snapshot.Restore(filepath.Join(m.ctx.StateDir, "snapshots"), it.snapID)
+				if err != nil {
+					m.err = err
+					return m, nil
+				}
+				m.message = "restored local files from snapshot " + it.snapID
+				m.err = nil
+				m.reload()
 				return m, nil
 			}
-			err := snapshot.Restore(filepath.Join(m.ctx.StateDir, "snapshots"), it.snapID)
+			// Commit rollback: materialize target tree as a new forward commit.
+			in, err := buildSyncInputs(m.ctx, false)
 			if err != nil {
 				m.err = err
 				return m, nil
 			}
-			m.message = "restored " + it.snapID
+			res, err := sync.RollbackTo(context.Background(), in, it.commitSHA)
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			short := res.CommitSHA
+			if len(short) > 7 {
+				short = short[:7]
+			}
+			if res.CommitSHA != "" {
+				m.message = fmt.Sprintf("rolled back to %s (new commit %s)",
+					shortSHA(it.commitSHA), short)
+			} else {
+				m.message = "already matches target"
+			}
 			m.err = nil
+			m.reload()
 		}
 	}
 	return m, nil
@@ -159,6 +184,13 @@ func (m *syncHistoryModel) View() string {
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]
+	}
+	return s
+}
+
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
 	}
 	return s
 }

@@ -29,33 +29,41 @@ func newHome(ctx *AppContext) homeModel {
 
 func (m *homeModel) rebuildChoices() {
 	bootstrapped := m.ctx.State.SyncRepoURL != ""
-	m.choices = []homeChoice{
-		{
+	m.choices = []homeChoice{}
+	if !bootstrapped {
+		m.choices = append(m.choices, homeChoice{
+			label:   "Bootstrap…",
+			enabled: true,
+			onEnter: func() tea.Cmd { return switchTo(newBootstrapWizard(m.ctx)) },
+		})
+	}
+	m.choices = append(m.choices,
+		homeChoice{
 			label:   "Sync now",
 			enabled: bootstrapped,
 			onEnter: func() tea.Cmd { return switchTo(newSyncPreview(m.ctx)) },
 		},
-		{
+		homeChoice{
 			label:   "History",
 			enabled: true,
 			onEnter: func() tea.Cmd { return switchTo(newSyncHistory(m.ctx)) },
 		},
-		{
+		homeChoice{
 			label:   "Profiles",
 			enabled: bootstrapped,
 			onEnter: func() tea.Cmd { return switchTo(newProfiles(m.ctx)) },
 		},
-		{
+		homeChoice{
 			label:   "Doctor",
 			enabled: true,
 			onEnter: func() tea.Cmd { return switchTo(newDoctorScreen(m.ctx)) },
 		},
-		{
+		homeChoice{
 			label:   "Settings",
 			enabled: true,
 			onEnter: func() tea.Cmd { return switchTo(newSettings(m.ctx)) },
 		},
-	}
+	)
 }
 
 func (m homeModel) Title() string { return "ccsync" }
@@ -63,6 +71,12 @@ func (m homeModel) Title() string { return "ccsync" }
 func (m homeModel) Init() tea.Cmd { return nil }
 
 func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Rebuild choices every tick so returning from Bootstrap or Profiles
+	// immediately reflects state changes.
+	m.rebuildChoices()
+	if m.cursor >= len(m.choices) {
+		m.cursor = 0
+	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {

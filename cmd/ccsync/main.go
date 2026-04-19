@@ -69,7 +69,8 @@ Usage:
   ccsync profile ls|use|create|rm     manage profiles
   ccsync snapshot ls                  list pre-sync snapshots
   ccsync snapshot restore ID          restore local files from a snapshot
-  ccsync rollback                     restore from the most recent snapshot
+  ccsync rollback                     restore local files from latest snapshot
+  ccsync rollback --commit SHA        revert repo+local to a specific commit
   ccsync doctor                       run integrity checks
   ccsync --version                    print version`)
 }
@@ -329,7 +330,12 @@ func runSnapshot(args []string) int {
 
 func runRollback(args []string) int {
 	fs := flag.NewFlagSet("rollback", flag.ExitOnError)
+	commitSHA := fs.String("commit", "", "roll back to a specific commit SHA (creates a new forward commit)")
 	fs.Parse(args)
+
+	if *commitSHA != "" {
+		return runRollbackCommit(*commitSHA)
+	}
 
 	stateDir, err := state.DefaultStateDir()
 	if err != nil {
@@ -352,7 +358,51 @@ func runRollback(args []string) int {
 		return 1
 	}
 	fmt.Printf("rolled back to %s (%d files restored)\n", latest.ID, len(latest.Files))
-	fmt.Println("note: this restored LOCAL files only. if you pushed changes you want to undo, use git on the sync repo.")
+	fmt.Println("note: this restored LOCAL files only. if you pushed changes you want to undo, use `ccsync rollback --commit SHA` instead.")
+	return 0
+}
+
+func runRollbackCommit(commitSHA string) int {
+	ctx, err := tui.NewContext()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	if ctx.State.SyncRepoURL == "" {
+		fmt.Fprintln(os.Stderr, "ccsync: no sync repo configured")
+		return 1
+	}
+	profileName := ctx.State.ActiveProfile
+	if profileName == "" {
+		profileName = "default"
+	}
+	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
+	in := sync.Inputs{
+		Config: ctx.Config, Profile: profileName,
+		ClaudeDir: ctx.ClaudeDir, ClaudeJSON: ctx.ClaudeJSON,
+		RepoPath: ctx.RepoPath, StateDir: ctx.StateDir,
+		HostUUID: ctx.State.HostUUID, HostName: ctx.HostName, AuthorEmail: ctx.Email,
+		Auth: auth,
+	}
+	res, err := sync.RollbackTo(context.Background(), in, commitSHA)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	short := res.CommitSHA
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	if res.CommitSHA == "" {
+		fmt.Println("already matches target")
+		return 0
+	}
+	fmt.Printf("rolled back to %s (new commit %s)\n", commitSHA[:7], short)
+	if len(res.MissingSecrets) > 0 {
+		fmt.Fprintf(os.Stderr, "%d file(s) skipped due to missing secrets; run `ccsync` and use RedactionReview\n",
+			len(res.MissingSecrets))
+		return 3
+	}
 	return 0
 }
 

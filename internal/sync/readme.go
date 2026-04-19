@@ -31,7 +31,11 @@ func writeRepoREADME(repoPath string, profiles []string, st *state.State, hostNa
 
 	sb.WriteString("\n## Last sync\n\n")
 	fmt.Fprintf(&sb, "- **host:** %s\n", hostName)
-	fmt.Fprintf(&sb, "- **active profile:** %s\n", st.ActiveProfile)
+	activeProfile := "(unknown)"
+	if st != nil {
+		activeProfile = st.ActiveProfile
+	}
+	fmt.Fprintf(&sb, "- **active profile:** %s\n", activeProfile)
 	fmt.Fprintf(&sb, "- **time:** %s UTC\n", time.Now().UTC().Format(time.RFC3339))
 
 	sb.WriteString("\n## What's safe to edit by hand\n\n")
