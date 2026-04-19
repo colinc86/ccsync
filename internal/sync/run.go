@@ -280,10 +280,14 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return Result{}, err
 		}
-		if err := os.WriteFile(abs, data, 0o644); err != nil {
+		if err := writeFileAtomic(abs, data); err != nil {
 			return Result{}, err
 		}
 	}
+
+	// Refresh README.md so a human browsing the repo sees current state.
+	profiles := listProfilesFromRepo(in.RepoPath)
+	_ = writeRepoREADME(in.RepoPath, profiles, state, in.HostName)
 
 	now := time.Now().UTC()
 	for path, data := range pendingRepoWrites {

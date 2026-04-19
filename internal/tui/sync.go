@@ -1,0 +1,150 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/colinc86/ccsync/internal/sync"
+	"github.com/colinc86/ccsync/internal/theme"
+)
+
+type syncModel struct {
+	ctx     *AppContext
+	events  []sync.Event
+	result  *sync.Result
+	err     error
+	done    bool
+	eventCh chan sync.Event
+	doneCh  chan doneMsg
+}
+
+type doneMsg struct {
+	res sync.Result
+	err error
+}
+
+type eventMsg sync.Event
+
+type startedMsg struct {
+	events chan sync.Event
+	done   chan doneMsg
+}
+
+func newSync(ctx *AppContext) *syncModel {
+	return &syncModel{ctx: ctx}
+}
+
+func (m *syncModel) Title() string { return "Syncing" }
+
+func (m *syncModel) Init() tea.Cmd {
+	return startSync(m.ctx)
+}
+
+func startSync(ctx *AppContext) tea.Cmd {
+	return func() tea.Msg {
+		events := make(chan sync.Event, 128)
+		doneCh := make(chan doneMsg, 1)
+		go func() {
+			in, err := buildSyncInputs(ctx, false)
+			if err != nil {
+				doneCh <- doneMsg{err: err}
+				close(events)
+				return
+			}
+			res, err := sync.Run(context.Background(), in, events)
+			close(events)
+			doneCh <- doneMsg{res: res, err: err}
+		}()
+		return startedMsg{events: events, done: doneCh}
+	}
+}
+
+func awaitNext(events chan sync.Event, done chan doneMsg) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return <-done
+			}
+			return eventMsg(ev)
+		case d := <-done:
+			return d
+		}
+	}
+}
+
+func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case startedMsg:
+		m.eventCh = msg.events
+		m.doneCh = msg.done
+		return m, awaitNext(m.eventCh, m.doneCh)
+	case eventMsg:
+		m.events = append(m.events, sync.Event(msg))
+		return m, awaitNext(m.eventCh, m.doneCh)
+	case doneMsg:
+		m.done = true
+		m.err = msg.err
+		if msg.err == nil {
+			r := msg.res
+			m.result = &r
+		}
+		return m, nil
+	case tea.KeyMsg:
+		if m.done {
+			return m, popScreen()
+		}
+	}
+	return m, nil
+}
+
+func (m *syncModel) View() string {
+	var sb strings.Builder
+	for _, e := range m.events {
+		stage := theme.Secondary.Render(fmt.Sprintf("%-10s", e.Stage))
+		line := stage + " " + e.Message
+		if e.Path != "" {
+			line += " " + theme.Hint.Render(e.Path)
+		}
+		sb.WriteString(line + "\n")
+	}
+	if !m.done {
+		sb.WriteString("\n" + theme.Hint.Render("syncing…"))
+		return sb.String()
+	}
+	sb.WriteString("\n")
+	if m.err != nil {
+		sb.WriteString(theme.Bad.Render("error: ") + m.err.Error() + "\n")
+		sb.WriteString("\n" + theme.Hint.Render("press any key to go back"))
+		return sb.String()
+	}
+	if m.result != nil {
+		r := m.result
+		if r.CommitSHA != "" {
+			short := r.CommitSHA
+			if len(short) > 7 {
+				short = short[:7]
+			}
+			sb.WriteString(theme.Good.Render("committed ") + short + "\n")
+		} else {
+			sb.WriteString(theme.Good.Render("no changes to push") + "\n")
+		}
+		if r.SnapshotID != "" {
+			sb.WriteString(theme.Hint.Render("pre-sync snapshot: "+r.SnapshotID) + "\n")
+		}
+		if len(r.MissingSecrets) > 0 {
+			sb.WriteString(theme.Warn.Render(fmt.Sprintf("%d file(s) skipped (missing secrets)", len(r.MissingSecrets))) + "\n")
+			for _, p := range r.MissingSecrets {
+				sb.WriteString("  " + p + "\n")
+			}
+		}
+		if len(r.Plan.Conflicts) > 0 {
+			sb.WriteString(theme.Bad.Render(fmt.Sprintf("%d conflict(s) — use ConflictResolver to finish", len(r.Plan.Conflicts))) + "\n")
+		}
+	}
+	sb.WriteString("\n" + theme.Hint.Render("press any key to go back"))
+	return sb.String()
+}

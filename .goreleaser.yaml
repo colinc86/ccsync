@@ -1,0 +1,66 @@
+version: 2
+
+project_name: ccsync
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: ccsync
+    main: ./cmd/ccsync
+    binary: ccsync
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{- .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - LICENSE*
+      - CLAUDE.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore'
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: ccsync
+    repository:
+      owner: colinc86
+      name: homebrew-tap
+    directory: Formula
+    homepage: https://github.com/colinc86/ccsync
+    description: Sync Claude Code settings across machines via your own git repo.
+    license: MIT
+    install: |
+      bin.install "ccsync"
+    test: |
+      system "#{bin}/ccsync --version"
