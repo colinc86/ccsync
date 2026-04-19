@@ -36,9 +36,19 @@ func (m *homeModel) rebuildChoices() {
 			onEnter: func() tea.Cmd { return switchTo(newSyncPreview(m.ctx)) },
 		},
 		{
+			label:   "History",
+			enabled: true,
+			onEnter: func() tea.Cmd { return switchTo(newSyncHistory(m.ctx)) },
+		},
+		{
 			label:   "Profiles",
 			enabled: bootstrapped,
 			onEnter: func() tea.Cmd { return switchTo(newProfiles(m.ctx)) },
+		},
+		{
+			label:   "Doctor",
+			enabled: true,
+			onEnter: func() tea.Cmd { return switchTo(newDoctorScreen(m.ctx)) },
 		},
 		{
 			label:   "Settings",

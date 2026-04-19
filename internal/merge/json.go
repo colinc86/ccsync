@@ -169,11 +169,14 @@ func typeOf(v any) string {
 
 func scalarConflict(path string, kind ConflictKind, base any, hasBase bool, local any, hasLocal bool, remote any, hasRemote bool) Conflict {
 	return Conflict{
-		Path:   path,
-		Kind:   kind,
-		Base:   jsonStr(base, hasBase),
-		Local:  jsonStr(local, hasLocal),
-		Remote: jsonStr(remote, hasRemote),
+		Path:          path,
+		Kind:          kind,
+		Base:          jsonStr(base, hasBase),
+		Local:         jsonStr(local, hasLocal),
+		Remote:        jsonStr(remote, hasRemote),
+		BasePresent:   hasBase,
+		LocalPresent:  hasLocal,
+		RemotePresent: hasRemote,
 	}
 }
 

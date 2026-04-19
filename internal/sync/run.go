@@ -214,6 +214,8 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 					Conflicts:  clean.Conflicts,
 					LocalData:  localData,
 					RemoteData: remoteData,
+					MergedData: merged.Merged,
+					IsJSON:     isJSONPath(path),
 				})
 				continue
 			}
@@ -227,9 +229,12 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 				Conflicts: []merge.Conflict{{
 					Path: path, Kind: merge.ConflictJSONDeleteMod,
 					Local: jsonString(localData), Remote: jsonString(remoteData),
+					LocalPresent: localData != nil, RemotePresent: remoteData != nil,
 				}},
 				LocalData:  localData,
 				RemoteData: remoteData,
+				MergedData: localData,
+				IsJSON:     isJSONPath(path),
 			})
 		}
 	}

@@ -18,6 +18,7 @@ const (
 	choicePending resolutionChoice = iota
 	choiceLocal
 	choiceRemote
+	choicePerKey
 )
 
 func (c resolutionChoice) symbol() string {
@@ -26,16 +27,20 @@ func (c resolutionChoice) symbol() string {
 		return theme.Good.Render("[L]")
 	case choiceRemote:
 		return theme.Secondary.Render("[R]")
+	case choicePerKey:
+		return theme.Primary.Render("[K]")
 	}
 	return theme.Warn.Render("[ ?]")
 }
 
 // conflictResolverModel shows the list of conflicted files and lets the user
-// pick local or remote for each, then apply all.
+// pick local or remote for each, then apply all. For JSON files, the user
+// can drill into per-key resolution via `k`.
 type conflictResolverModel struct {
 	ctx       *AppContext
 	conflicts []sync.FileConflict
 	choices   []resolutionChoice
+	override  map[int][]byte // fileIdx → final bytes (from per-key picker)
 	cursor    int
 	applying  bool
 	err       error
@@ -47,6 +52,7 @@ func newConflictResolver(ctx *AppContext, conflicts []sync.FileConflict) *confli
 		ctx:       ctx,
 		conflicts: conflicts,
 		choices:   make([]resolutionChoice, len(conflicts)),
+		override:  map[int][]byte{},
 	}
 }
 
@@ -68,6 +74,11 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.result = &r
 		}
 		return m, nil
+	case perKeyResolvedMsg:
+		m.override[msg.fileIdx] = msg.bytes
+		m.choices[msg.fileIdx] = choicePerKey
+		m.advance()
+		return m, nil
 	case tea.KeyMsg:
 		if m.applying {
 			return m, nil
@@ -87,17 +98,23 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l":
 			if len(m.conflicts) > 0 {
 				m.choices[m.cursor] = choiceLocal
+				delete(m.override, m.cursor)
 				m.advance()
 			}
 		case "r":
 			if len(m.conflicts) > 0 {
 				m.choices[m.cursor] = choiceRemote
+				delete(m.override, m.cursor)
 				m.advance()
+			}
+		case "enter":
+			if len(m.conflicts) > 0 && m.conflicts[m.cursor].IsJSON {
+				return m, switchTo(newConflictKeyResolver(m.ctx, m.cursor, m.conflicts[m.cursor]))
 			}
 		case "a":
 			if m.allResolved() {
 				m.applying = true
-				return m, runApplyResolutions(m.ctx, m.conflicts, m.choices)
+				return m, runApplyResolutions(m.ctx, m.conflicts, m.choices, m.override)
 			}
 		}
 	}
@@ -119,10 +136,14 @@ func (m *conflictResolverModel) allResolved() bool {
 	return true
 }
 
-func runApplyResolutions(ctx *AppContext, conflicts []sync.FileConflict, choices []resolutionChoice) tea.Cmd {
+func runApplyResolutions(ctx *AppContext, conflicts []sync.FileConflict, choices []resolutionChoice, override map[int][]byte) tea.Cmd {
 	return func() tea.Msg {
 		resolutions := map[string][]byte{}
 		for i, fc := range conflicts {
+			if data, ok := override[i]; ok && choices[i] == choicePerKey {
+				resolutions[fc.Path] = data
+				continue
+			}
 			switch choices[i] {
 			case choiceLocal:
 				resolutions[fc.Path] = fc.LocalData
@@ -188,6 +209,6 @@ func (m *conflictResolverModel) View() string {
 	if m.allResolved() {
 		sb.WriteString(theme.Primary.Render("a ") + "apply all • ")
 	}
-	sb.WriteString(theme.Hint.Render("l take local • r take remote • ↑↓ move"))
+	sb.WriteString(theme.Hint.Render("l local • r remote • enter per-key (JSON) • ↑↓ move"))
 	return sb.String()
 }

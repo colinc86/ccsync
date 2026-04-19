@@ -14,6 +14,7 @@ import (
 	"github.com/colinc86/ccsync/internal/doctor"
 	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/profile"
+	"github.com/colinc86/ccsync/internal/snapshot"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/tui"
@@ -35,6 +36,10 @@ func main() {
 			os.Exit(runDoctor())
 		case "profile":
 			os.Exit(runProfile(os.Args[2:]))
+		case "snapshot":
+			os.Exit(runSnapshot(os.Args[2:]))
+		case "rollback":
+			os.Exit(runRollback(os.Args[2:]))
 		case "--help", "-h":
 			printHelp()
 			return
@@ -62,6 +67,9 @@ Usage:
   ccsync bootstrap --repo URL         initialize sync from an existing git repo
   ccsync bootstrap --gh-create NAME   create a new private repo via gh CLI
   ccsync profile ls|use|create|rm     manage profiles
+  ccsync snapshot ls                  list pre-sync snapshots
+  ccsync snapshot restore ID          restore local files from a snapshot
+  ccsync rollback                     restore from the most recent snapshot
   ccsync doctor                       run integrity checks
   ccsync --version                    print version`)
 }
@@ -267,6 +275,85 @@ func runProfile(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "unknown profile subcommand: %s\n", args[0])
 	return 1
+}
+
+func runSnapshot(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "ccsync snapshot: subcommand required (ls | restore)")
+		return 1
+	}
+	stateDir, err := state.DefaultStateDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	root := filepath.Join(stateDir, "snapshots")
+
+	switch args[0] {
+	case "ls":
+		snaps, err := snapshot.List(root)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ccsync:", err)
+			return 1
+		}
+		if len(snaps) == 0 {
+			fmt.Println("(no snapshots)")
+			return 0
+		}
+		for _, s := range snaps {
+			pin := ""
+			if s.Pinned {
+				pin = " [pinned]"
+			}
+			fmt.Printf("  %s  %s  %d file(s)%s\n",
+				s.CreatedAt.Local().Format("2006-01-02 15:04:05"),
+				s.ID, len(s.Files), pin)
+		}
+		return 0
+
+	case "restore":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "ccsync snapshot restore: snapshot ID required")
+			return 1
+		}
+		if err := snapshot.Restore(root, args[1]); err != nil {
+			fmt.Fprintln(os.Stderr, "ccsync:", err)
+			return 1
+		}
+		fmt.Printf("restored: %s\n", args[1])
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "unknown snapshot subcommand: %s\n", args[0])
+	return 1
+}
+
+func runRollback(args []string) int {
+	fs := flag.NewFlagSet("rollback", flag.ExitOnError)
+	fs.Parse(args)
+
+	stateDir, err := state.DefaultStateDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	root := filepath.Join(stateDir, "snapshots")
+	snaps, err := snapshot.List(root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	if len(snaps) == 0 {
+		fmt.Fprintln(os.Stderr, "ccsync: no snapshot to roll back to")
+		return 1
+	}
+	latest := snaps[0]
+	if err := snapshot.Restore(root, latest.ID); err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	fmt.Printf("rolled back to %s (%d files restored)\n", latest.ID, len(latest.Files))
+	fmt.Println("note: this restored LOCAL files only. if you pushed changes you want to undo, use git on the sync repo.")
+	return 0
 }
 
 func runDoctor() int {

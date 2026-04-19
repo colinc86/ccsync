@@ -24,6 +24,8 @@ type FileConflict struct {
 	Conflicts  []merge.Conflict
 	LocalData  []byte // repo-side filtered content as computed from local ~/.claude
 	RemoteData []byte // bytes at the remote's HEAD for this path
+	MergedData []byte // best-effort merge from the engine; defaults to local where it couldn't decide
+	IsJSON     bool   // true = per-key resolution is supported
 }
 
 // Plan is the computed change set.
