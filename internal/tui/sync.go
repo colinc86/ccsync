@@ -12,13 +12,14 @@ import (
 )
 
 type syncModel struct {
-	ctx     *AppContext
-	events  []sync.Event
-	result  *sync.Result
-	err     error
-	done    bool
-	eventCh chan sync.Event
-	doneCh  chan doneMsg
+	ctx       *AppContext
+	events    []sync.Event
+	result    *sync.Result
+	err       error
+	done      bool
+	eventCh   chan sync.Event
+	doneCh    chan doneMsg
+	onlyPaths map[string]bool // if non-nil, this sync is a selective one-shot
 }
 
 type doneMsg struct {
@@ -40,10 +41,10 @@ func newSync(ctx *AppContext) *syncModel {
 func (m *syncModel) Title() string { return "Syncing" }
 
 func (m *syncModel) Init() tea.Cmd {
-	return startSync(m.ctx)
+	return startSync(m.ctx, m.onlyPaths)
 }
 
-func startSync(ctx *AppContext) tea.Cmd {
+func startSync(ctx *AppContext, onlyPaths map[string]bool) tea.Cmd {
 	return func() tea.Msg {
 		events := make(chan sync.Event, 128)
 		doneCh := make(chan doneMsg, 1)
@@ -54,6 +55,7 @@ func startSync(ctx *AppContext) tea.Cmd {
 				close(events)
 				return
 			}
+			in.OnlyPaths = onlyPaths
 			res, err := sync.Run(context.Background(), in, events)
 			close(events)
 			doneCh <- doneMsg{res: res, err: err}
@@ -94,7 +96,19 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
-		if m.done {
+		if !m.done {
+			return m, nil
+		}
+		switch msg.String() {
+		case "r":
+			if m.result != nil && len(m.result.Plan.Conflicts) > 0 {
+				return m, switchTo(newConflictResolver(m.ctx, m.result.Plan.Conflicts))
+			}
+		case "v":
+			if m.result != nil && len(m.result.MissingSecrets) > 0 {
+				return m, switchTo(newRedactionReview(m.ctx, m.result.MissingSecrets))
+			}
+		default:
 			return m, popScreen()
 		}
 	}
@@ -142,9 +156,12 @@ func (m *syncModel) View() string {
 			}
 		}
 		if len(r.Plan.Conflicts) > 0 {
-			sb.WriteString(theme.Bad.Render(fmt.Sprintf("%d conflict(s) — use ConflictResolver to finish", len(r.Plan.Conflicts))) + "\n")
+			sb.WriteString(theme.Bad.Render(fmt.Sprintf("%d conflict(s)", len(r.Plan.Conflicts))) + "   " + theme.Primary.Render("r ") + "resolve\n")
+		}
+		if len(r.MissingSecrets) > 0 {
+			sb.WriteString(theme.Warn.Render(fmt.Sprintf("%d missing secret(s)", len(r.MissingSecrets))) + "   " + theme.Primary.Render("v ") + "fill\n")
 		}
 	}
-	sb.WriteString("\n" + theme.Hint.Render("press any key to go back"))
+	sb.WriteString("\n" + theme.Hint.Render("any other key returns to home"))
 	return sb.String()
 }

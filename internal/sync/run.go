@@ -35,7 +35,16 @@ type Inputs struct {
 	AuthorEmail string
 	DryRun      bool
 	Auth        transport.AuthMethod
+
+	// OnlyPaths, when non-nil, restricts this Run to a subset of repo paths.
+	// Paths not in the set are shown in the plan (action=NoOp) but are NOT
+	// applied. When set, state.LastSyncedSHA is NOT advanced so the skipped
+	// paths remain pending for the next sync. Selective sync is one-shot.
+	OnlyPaths map[string]bool
 }
+
+// Selective reports whether this run is a filtered/selective sync.
+func (in Inputs) Selective() bool { return in.OnlyPaths != nil }
 
 // Run performs a full sync. Events are emitted on the provided channel; nil
 // channel disables events. The channel is NOT closed by Run.
@@ -177,6 +186,11 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			Path: path, LocalAbs: localAbs, Action: action,
 		})
 
+		// Selective sync: only apply actions for paths in the filter.
+		if in.Selective() && !in.OnlyPaths[path] {
+			continue
+		}
+
 		if in.DryRun {
 			continue
 		}
@@ -195,7 +209,12 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		case manifest.ActionMerge:
 			merged, clean := mergeFile(path, nil, localData, remoteData)
 			if !clean.Clean() {
-				plan.Conflicts = append(plan.Conflicts, FileConflict{Path: path, Conflicts: clean.Conflicts})
+				plan.Conflicts = append(plan.Conflicts, FileConflict{
+					Path:       path,
+					Conflicts:  clean.Conflicts,
+					LocalData:  localData,
+					RemoteData: remoteData,
+				})
 				continue
 			}
 			pendingRepoWrites[path] = merged.Merged
@@ -209,6 +228,8 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 					Path: path, Kind: merge.ConflictJSONDeleteMod,
 					Local: jsonString(localData), Remote: jsonString(remoteData),
 				}},
+				LocalData:  localData,
+				RemoteData: remoteData,
 			})
 		}
 	}
@@ -326,11 +347,14 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		}
 	}
 
-	// Record the commit we just synced to, so the next run treats this as base.
-	if newHead, err := repo.HeadSHA(); err == nil && newHead != "" {
-		state.LastSyncedSHA[in.Profile] = newHead
-		if err := saveHostState(in.StateDir, state); err != nil {
-			return Result{}, fmt.Errorf("save state: %w", err)
+	// Advance state.LastSyncedSHA ONLY for full syncs. Selective syncs leave
+	// the base commit alone so the skipped files remain pending next time.
+	if !in.Selective() {
+		if newHead, err := repo.HeadSHA(); err == nil && newHead != "" {
+			state.LastSyncedSHA[in.Profile] = newHead
+			if err := saveHostState(in.StateDir, state); err != nil {
+				return Result{}, fmt.Errorf("save state: %w", err)
+			}
 		}
 	}
 

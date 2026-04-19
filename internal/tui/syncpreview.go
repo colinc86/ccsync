@@ -97,6 +97,10 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.loading && m.err == nil {
 				return m, switchTo(newSync(m.ctx))
 			}
+		case "s":
+			if !m.loading && m.err == nil {
+				return m, switchTo(newSelectiveSync(m.ctx, m.plan))
+			}
 		}
 	}
 	return m, nil
@@ -148,7 +152,9 @@ func (m *syncPreviewModel) View() string {
 		}
 	}
 
-	sb.WriteString("\n" + theme.Primary.Render("enter ") + "apply • " + theme.Hint.Render("esc cancel"))
+	sb.WriteString("\n" + theme.Primary.Render("enter ") + "apply all • " +
+		theme.Primary.Render("s ") + "selective • " +
+		theme.Hint.Render("esc cancel"))
 	return sb.String()
 }
 

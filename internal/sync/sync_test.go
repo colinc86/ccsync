@@ -162,6 +162,74 @@ func TestCrossMachinePushPullRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSelectiveSyncOnlyAppliesListedPaths(t *testing.T) {
+	secrets.MockInit()
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.LoadDefault()
+
+	homeA := filepath.Join(tmp, "home")
+	repoA := filepath.Join(tmp, "repo")
+	stateA := filepath.Join(tmp, "state")
+	seedMachine(t, homeA)
+	if _, err := gitx.Init(repoA, bareDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// First: a plain dry run to discover what paths exist.
+	in := machineInputs(homeA, repoA, stateA, cfg)
+	in.DryRun = true
+	dry, err := Run(context.Background(), in, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pick exactly one path (the agent file). Selective apply that one.
+	var pick string
+	for _, a := range dry.Plan.Actions {
+		if strings.HasSuffix(a.Path, "agents/foo.md") {
+			pick = a.Path
+			break
+		}
+	}
+	if pick == "" {
+		t.Fatal("agent path not found in plan")
+	}
+
+	in.DryRun = false
+	in.OnlyPaths = map[string]bool{pick: true}
+	res, err := Run(context.Background(), in, nil)
+	if err != nil {
+		t.Fatalf("selective Run: %v", err)
+	}
+	if res.CommitSHA == "" {
+		t.Fatal("expected a commit for the one selected path")
+	}
+
+	// The picked file should be in the repo; an unselected one should NOT be.
+	inspectPicked := filepath.Join(repoA, pick)
+	if _, err := os.Stat(inspectPicked); err != nil {
+		t.Errorf("picked path not materialized: %v", err)
+	}
+	// settings.json was in the plan but not selected — shouldn't be in repo.
+	inspectSkipped := filepath.Join(repoA, "profiles/default/claude/settings.json")
+	if _, err := os.Stat(inspectSkipped); err == nil {
+		t.Error("un-selected path was written to repo")
+	}
+
+	// Because it's selective, state.LastSyncedSHA should NOT advance.
+	st, err := loadHostState(stateA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha := st.LastSyncedSHA["default"]; sha != "" {
+		t.Errorf("LastSyncedSHA advanced on selective sync: %s", sha)
+	}
+}
+
 func TestDryRunReturnsPlanWithoutWrites(t *testing.T) {
 	secrets.MockInit()
 	tmp := t.TempDir()

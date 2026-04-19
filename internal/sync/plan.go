@@ -16,10 +16,14 @@ type FileAction struct {
 	Action   manifest.Action // Decide() output
 }
 
-// FileConflict bundles the per-file merge conflicts.
+// FileConflict bundles the per-file merge conflicts plus the raw bytes on
+// either side — the TUI needs both to render pickers and to write resolved
+// content back via ApplyResolutions.
 type FileConflict struct {
-	Path      string
-	Conflicts []merge.Conflict
+	Path       string
+	Conflicts  []merge.Conflict
+	LocalData  []byte // repo-side filtered content as computed from local ~/.claude
+	RemoteData []byte // bytes at the remote's HEAD for this path
 }
 
 // Plan is the computed change set.
