@@ -6,11 +6,13 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/colinc86/ccsync/internal/config"
+	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -53,7 +55,19 @@ func NewContext() (*AppContext, error) {
 		return nil, err
 	}
 
+	// Apply secrets-backend override from state so TUI flows honor the
+	// user's choice even when the env var is unset.
+	secrets.SetBackend(string(st.SecretsBackend))
+
 	hostName, _ := os.Hostname()
+	authorName := st.AuthorName
+	if authorName == "" {
+		authorName = hostName
+	}
+	authorEmail := st.AuthorEmail
+	if authorEmail == "" {
+		authorEmail = hostName + "@ccsync.local"
+	}
 	return &AppContext{
 		Config:     cfg,
 		State:      st,
@@ -61,8 +75,8 @@ func NewContext() (*AppContext, error) {
 		RepoPath:   repoPath,
 		ClaudeDir:  filepath.Join(home, ".claude"),
 		ClaudeJSON: filepath.Join(home, ".claude.json"),
-		HostName:   hostName,
-		Email:      hostName + "@ccsync.local",
+		HostName:   authorName,
+		Email:      authorEmail,
 	}, nil
 }
 
@@ -77,6 +91,15 @@ func loadOrDefaultConfig(repoPath string) (*config.Config, error) {
 type screen interface {
 	tea.Model
 	Title() string
+}
+
+// escapeCapturer is an optional screen capability: when CapturesEscape()
+// returns true, the app routes the esc key to the screen's Update instead of
+// popping. Screens with modal sub-states (editing a field, confirming a
+// destructive action) implement this so esc cancels the modal rather than
+// the whole screen.
+type escapeCapturer interface {
+	CapturesEscape() bool
 }
 
 // AppModel is the root Bubble Tea model.
@@ -118,10 +141,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 		case "esc":
+			// If the top screen captures escape (e.g. Settings while editing
+			// a field), let it consume the key instead of popping the stack.
+			if len(m.screens) > 0 {
+				if cap, ok := m.screens[len(m.screens)-1].(escapeCapturer); ok && cap.CapturesEscape() {
+					break
+				}
+			}
 			if len(m.screens) > 1 {
 				m.screens = m.screens[:len(m.screens)-1]
 				return m, nil
 			}
+			// On Home with nothing to pop back to, esc quits — matching
+			// the footer hint "esc back • ctrl+c quit" doesn't lie anymore.
+			return m, tea.Quit
 		}
 	case switchScreenMsg:
 		m.screens = append(m.screens, msg.s)
@@ -143,17 +176,38 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the top screen inside a titled card. A persistent status bar
 // below the body keeps profile / exclude / host-class context visible on
-// every screen.
+// every screen. When the user is deep in the screen stack, the header shows
+// breadcrumbs (Home > Settings > ccsync.yaml) so they know how to get back.
 func (m AppModel) View() string {
 	if len(m.screens) == 0 {
 		return ""
 	}
 	top := m.screens[len(m.screens)-1]
-	header := theme.Heading.Render(top.Title())
+	header := renderBreadcrumbs(m.screens)
 	status := statusBar(m.ctx)
-	footer := theme.Hint.Render("esc back • ctrl+c quit")
+	footer := theme.Hint.Render("esc back/quit • ctrl+c quit")
 	body := top.View()
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", status, footer)
+}
+
+// renderBreadcrumbs returns the header line: each screen's title separated
+// by a subtle chevron, with only the leaf rendered in the heading style.
+func renderBreadcrumbs(screens []screen) string {
+	if len(screens) == 0 {
+		return ""
+	}
+	if len(screens) == 1 {
+		return theme.Heading.Render(screens[0].Title())
+	}
+	var parts []string
+	for i, s := range screens {
+		if i == len(screens)-1 {
+			parts = append(parts, theme.Heading.Render(s.Title()))
+		} else {
+			parts = append(parts, theme.Subtle.Render(s.Title()))
+		}
+	}
+	return strings.Join(parts, theme.Subtle.Render("  ›  "))
 }
 
 // switchScreenMsg pushes a new screen on top of the stack.

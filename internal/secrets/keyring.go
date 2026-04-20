@@ -27,8 +27,22 @@ func Key(profile, jsonPath string) string {
 	return profile + ":" + jsonPath
 }
 
+// configuredBackend overrides env/default when non-empty. Set via SetBackend.
+var configuredBackend string
+
+// SetBackend switches the persistence backend at runtime. Values: "keychain",
+// "file", or "" (defer to env CCSYNC_SECRETS_BACKEND, else keychain). Callers
+// typically wire this from state.State.SecretsBackend at startup.
+func SetBackend(backend string) {
+	configuredBackend = backend
+}
+
 func useFileBackend() bool {
-	return os.Getenv("CCSYNC_SECRETS_BACKEND") == "file"
+	b := configuredBackend
+	if b == "" {
+		b = os.Getenv("CCSYNC_SECRETS_BACKEND")
+	}
+	return b == "file"
 }
 
 // Store writes value under key.

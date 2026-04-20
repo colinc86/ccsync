@@ -281,6 +281,10 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			return Result{}, fmt.Errorf("snapshot: %w", err)
 		}
 		snapID = meta.ID
+		// Prune after take — config drives retention; zero values fall back
+		// to defaults in state.SnapshotRetention().
+		keepCount, keepDays := state.SnapshotRetention()
+		_ = snapshot.Prune(snapRoot, keepCount, time.Duration(keepDays)*24*time.Hour)
 	}
 
 	var missingSecrets []string

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/colinc86/ccsync/internal/sync"
@@ -17,6 +18,7 @@ type syncModel struct {
 	result    *sync.Result
 	err       error
 	done      bool
+	spin      spinner.Model
 	eventCh   chan sync.Event
 	doneCh    chan doneMsg
 	onlyPaths map[string]bool // if non-nil, this sync is a selective one-shot
@@ -35,13 +37,13 @@ type startedMsg struct {
 }
 
 func newSync(ctx *AppContext) *syncModel {
-	return &syncModel{ctx: ctx}
+	return &syncModel{ctx: ctx, spin: newSpinner()}
 }
 
 func (m *syncModel) Title() string { return "Syncing" }
 
 func (m *syncModel) Init() tea.Cmd {
-	return startSync(m.ctx, m.onlyPaths)
+	return tea.Batch(startSync(m.ctx, m.onlyPaths), m.spin.Tick)
 }
 
 func startSync(ctx *AppContext, onlyPaths map[string]bool) tea.Cmd {
@@ -80,6 +82,13 @@ func awaitNext(events chan sync.Event, done chan doneMsg) tea.Cmd {
 
 func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if m.done {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	case startedMsg:
 		m.eventCh = msg.events
 		m.doneCh = msg.done
@@ -118,7 +127,7 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *syncModel) View() string {
 	var sb strings.Builder
 	for _, e := range m.events {
-		stage := theme.Secondary.Render(fmt.Sprintf("%-10s", e.Stage))
+		stage := theme.Secondary.Render(fmt.Sprintf("%-10s", stageGlyph(e.Stage)+e.Stage))
 		line := stage + " " + e.Message
 		if e.Path != "" {
 			line += " " + theme.Hint.Render(e.Path)
@@ -126,7 +135,7 @@ func (m *syncModel) View() string {
 		sb.WriteString(line + "\n")
 	}
 	if !m.done {
-		sb.WriteString("\n" + theme.Hint.Render("syncing…"))
+		sb.WriteString("\n" + m.spin.View() + " " + theme.Hint.Render(currentStage(m.events)))
 		return sb.String()
 	}
 	sb.WriteString("\n")
@@ -164,4 +173,39 @@ func (m *syncModel) View() string {
 	}
 	sb.WriteString("\n" + theme.Hint.Render("any other key returns to home"))
 	return sb.String()
+}
+
+// stageGlyph returns a short icon for a sync stage so the streaming log has
+// visual rhythm instead of a wall of text.
+func stageGlyph(stage string) string {
+	switch stage {
+	case "fetch":
+		return "↓ "
+	case "discover":
+		return "◎ "
+	case "snapshot":
+		return "⎘ "
+	case "redaction":
+		return "✱ "
+	case "commit":
+		return "✎ "
+	case "push":
+		return "↑ "
+	case "done":
+		return "✓ "
+	}
+	return "· "
+}
+
+// currentStage returns a short hint describing what sync is doing right now,
+// based on the most recent event. Shown alongside the spinner.
+func currentStage(events []sync.Event) string {
+	if len(events) == 0 {
+		return "starting sync…"
+	}
+	last := events[len(events)-1]
+	if last.Message != "" {
+		return last.Message + "…"
+	}
+	return last.Stage + "…"
 }

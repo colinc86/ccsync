@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -25,6 +26,7 @@ type bootstrapWizardModel struct {
 
 	urlInput     textinput.Model
 	profileInput textinput.Model
+	spin         spinner.Model
 
 	running bool
 	err     error
@@ -63,6 +65,7 @@ func newBootstrapWizard(ctx *AppContext) *bootstrapWizardModel {
 		ctx:          ctx,
 		urlInput:     urlInput,
 		profileInput: profileInput,
+		spin:         newSpinner(),
 	}
 }
 
@@ -71,6 +74,13 @@ func (m *bootstrapWizardModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if !m.running {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	case bootstrapDoneMsg:
 		m.running = false
 		m.err = msg.err
@@ -175,7 +185,10 @@ func (m *bootstrapWizardModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	switch msg.String() {
 	case "enter":
 		m.running = true
-		return m, runBootstrap(m.ctx, m.sourceKind, m.urlInput.Value(), m.profileInput.Value())
+		return m, tea.Batch(
+			runBootstrap(m.ctx, m.sourceKind, m.urlInput.Value(), m.profileInput.Value()),
+			m.spin.Tick,
+		)
 	case "b":
 		m.step = stepProfile
 		m.profileInput.Focus()
@@ -205,7 +218,7 @@ func runBootstrap(ctx *AppContext, source bootstrap.Source, urlOrName, profile s
 
 func (m *bootstrapWizardModel) View() string {
 	if m.running {
-		return theme.Hint.Render("bootstrapping — cloning and seeding repo…")
+		return m.spin.View() + " " + theme.Hint.Render("bootstrapping — cloning and seeding repo…")
 	}
 
 	var sb strings.Builder

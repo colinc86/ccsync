@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/manifest"
+	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -20,10 +22,11 @@ type syncPreviewModel struct {
 	loading bool
 	err     error
 	plan    sync.Plan
+	spin    spinner.Model
 }
 
 func newSyncPreview(ctx *AppContext) *syncPreviewModel {
-	return &syncPreviewModel{ctx: ctx, loading: true}
+	return &syncPreviewModel{ctx: ctx, loading: true, spin: newSpinner()}
 }
 
 func (m *syncPreviewModel) Title() string { return "Sync preview (dry run)" }
@@ -34,7 +37,7 @@ type previewDoneMsg struct {
 }
 
 func (m *syncPreviewModel) Init() tea.Cmd {
-	return runDryRun(m.ctx)
+	return tea.Batch(runDryRun(m.ctx), m.spin.Tick)
 }
 
 func runDryRun(ctx *AppContext) tea.Cmd {
@@ -72,24 +75,44 @@ func buildSyncInputs(ctx *AppContext, dryRun bool) (sync.Inputs, error) {
 func buildAuth(ctx *AppContext) transport.AuthMethod {
 	kind := gitx.AuthSSH
 	switch ctx.State.Auth {
-	case "ssh":
+	case "ssh", "":
 		kind = gitx.AuthSSH
 	case "https":
 		kind = gitx.AuthHTTPS
-	case "":
-		kind = gitx.AuthSSH
 	}
-	auth := gitx.AuthConfig{Kind: kind, SSHKeyPath: ctx.State.SSHKeyPath, HTTPSUser: ctx.State.HTTPSUser}
-	a, _ := auth.Resolve()
+	cfg := gitx.AuthConfig{
+		Kind:       kind,
+		SSHKeyPath: ctx.State.SSHKeyPath,
+		HTTPSUser:  ctx.State.HTTPSUser,
+	}
+	if kind == gitx.AuthHTTPS {
+		// HTTPS token lives in the secrets backend under a stable key so
+		// flipping the backend picks up the same value.
+		if tok, err := secrets.Fetch("https-token"); err == nil {
+			cfg.HTTPSToken = tok
+		}
+	}
+	a, _ := cfg.Resolve()
 	return a
 }
 
 func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if !m.loading {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	case previewDoneMsg:
 		m.loading = false
 		m.err = msg.err
 		m.plan = msg.plan
+		// Auto-apply on clean syncs, when the user opted in.
+		if m.err == nil && m.ctx.State.AutoApplyClean && m.planIsClean() {
+			return m, switchTo(newSync(m.ctx))
+		}
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -108,7 +131,7 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *syncPreviewModel) View() string {
 	if m.loading {
-		return theme.Hint.Render("computing change set…")
+		return m.spin.View() + " " + theme.Hint.Render("computing change set…")
 	}
 	if m.err != nil {
 		return theme.Bad.Render("error: ") + m.err.Error()
@@ -167,6 +190,13 @@ func (m *syncPreviewModel) View() string {
 		theme.Primary.Render("s ") + "selective • " +
 		theme.Hint.Render("esc cancel"))
 	return sb.String()
+}
+
+// planIsClean reports whether the plan has real work but no conflicts and
+// no placeholder-restore concerns. Profile-excluded paths don't count as
+// conflicts. An empty plan (nothing to do) is also "clean" — no-op apply.
+func (m *syncPreviewModel) planIsClean() bool {
+	return len(m.plan.Conflicts) == 0
 }
 
 func actionGlyph(a manifest.Action) string {

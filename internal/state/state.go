@@ -21,6 +21,16 @@ const (
 	AuthHTTPS AuthKind = "https"
 )
 
+// SecretsBackend names a persistence backend for JSON redaction values.
+// Empty string means "fall back to env CCSYNC_SECRETS_BACKEND, or keychain".
+type SecretsBackend string
+
+const (
+	SecretsBackendDefault  SecretsBackend = ""
+	SecretsBackendKeychain SecretsBackend = "keychain"
+	SecretsBackendFile     SecretsBackend = "file"
+)
+
 // State is the on-disk shape of ~/.ccsync/state.json.
 type State struct {
 	SyncRepoURL   string            `json:"syncRepoURL,omitempty"`
@@ -31,6 +41,36 @@ type State struct {
 	HostUUID      string            `json:"hostUUID,omitempty"`
 	HostClass     string            `json:"hostClass,omitempty"` // freeform label (work, personal); informational for now
 	LastSyncedSHA map[string]string `json:"lastSyncedSHA,omitempty"`
+
+	// Commit identity — used as git author on every sync commit. Unset means
+	// fallback to hostname / hostname@ccsync.local.
+	AuthorName  string `json:"authorName,omitempty"`
+	AuthorEmail string `json:"authorEmail,omitempty"`
+
+	// SecretsBackend overrides the default (keychain). Empty string means use
+	// the env var or platform default.
+	SecretsBackend SecretsBackend `json:"secretsBackend,omitempty"`
+
+	// Snapshot retention. Zero means "use defaults" (30 snapshots, 14 days).
+	SnapshotMaxCount   int `json:"snapshotMaxCount,omitempty"`
+	SnapshotMaxAgeDays int `json:"snapshotMaxAgeDays,omitempty"`
+
+	// AutoApplyClean, when true, skips the "press enter to apply" step on
+	// syncs that have no conflicts and no redaction gaps. Default false.
+	AutoApplyClean bool `json:"autoApplyClean,omitempty"`
+}
+
+// SnapshotRetention returns (maxCount, maxAge) with defaults applied.
+func (s *State) SnapshotRetention() (int, int) {
+	count := s.SnapshotMaxCount
+	if count <= 0 {
+		count = 30
+	}
+	days := s.SnapshotMaxAgeDays
+	if days <= 0 {
+		days = 14
+	}
+	return count, days
 }
 
 // Path returns the state.json path inside stateDir (~/.ccsync by default).

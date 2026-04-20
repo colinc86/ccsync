@@ -2,10 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/colinc86/ccsync/internal/snapshot"
 	"github.com/colinc86/ccsync/internal/theme"
 )
 
@@ -44,6 +46,11 @@ func (m *homeModel) rebuildChoices() {
 			onEnter: func() tea.Cmd { return switchTo(newSyncPreview(m.ctx)) },
 		},
 		homeChoice{
+			label:   "Browse tracked files",
+			enabled: bootstrapped,
+			onEnter: func() tea.Cmd { return switchTo(newBrowseTracked(m.ctx)) },
+		},
+		homeChoice{
 			label:   "History",
 			enabled: true,
 			onEnter: func() tea.Cmd { return switchTo(newSyncHistory(m.ctx)) },
@@ -79,7 +86,16 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
+		s := msg.String()
+		// Numeric shortcuts — "1" picks the first menu item, etc.
+		if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
+			idx := int(s[0] - '1')
+			if idx < len(m.choices) && m.choices[idx].enabled {
+				m.cursor = idx
+				return m, m.choices[idx].onEnter()
+			}
+		}
+		switch s {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -107,17 +123,22 @@ func (m homeModel) View() string {
 		profile = "(none)"
 	}
 
-	sb.WriteString(fmt.Sprintf("host:    %s\n", theme.Secondary.Render(m.ctx.HostName)))
-	sb.WriteString(fmt.Sprintf("profile: %s\n", theme.Secondary.Render(profile)))
+	fmt.Fprintf(&sb, "host:    %s\n", theme.Secondary.Render(m.ctx.HostName))
+	fmt.Fprintf(&sb, "profile: %s\n", theme.Secondary.Render(profile))
 	if bootstrapped {
-		sb.WriteString(fmt.Sprintf("repo:    %s\n", theme.Hint.Render(m.ctx.State.SyncRepoURL)))
+		fmt.Fprintf(&sb, "repo:    %s\n", theme.Hint.Render(m.ctx.State.SyncRepoURL))
 		last := m.ctx.State.LastSyncedSHA[profile]
 		if last == "" {
 			last = "never"
 		} else if len(last) > 7 {
 			last = last[:7]
 		}
-		sb.WriteString(fmt.Sprintf("last:    %s\n", theme.Hint.Render(last)))
+		fmt.Fprintf(&sb, "last:    %s", theme.Hint.Render(last))
+		if n := countSnapshots(m.ctx); n > 0 {
+			fmt.Fprintf(&sb, "   %s", theme.Hint.Render(fmt.Sprintf("· %d snapshot(s)", n)))
+		}
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "status:  %s\n", FreshnessBadge(Freshness(m.ctx)))
 	} else {
 		sb.WriteString(theme.Warn.Render("no sync repo configured — run: ccsync bootstrap --repo <URL>") + "\n")
 	}
@@ -126,15 +147,26 @@ func (m homeModel) View() string {
 	for i, c := range m.choices {
 		cursor := "  "
 		line := c.label
+		shortcut := theme.Hint.Render(fmt.Sprintf("%d ", i+1))
 		if m.cursor == i {
 			cursor = theme.Primary.Render("▸ ")
 		}
 		if !c.enabled {
 			line = theme.Hint.Render(line + " (unavailable)")
 		}
-		sb.WriteString(cursor + line + "\n")
+		sb.WriteString(cursor + shortcut + line + "\n")
 	}
-	sb.WriteString("\n" + theme.Hint.Render("↑↓ move • enter select"))
+	sb.WriteString("\n" + theme.Hint.Render("↑↓ move • 1-9 jump • enter select"))
 
 	return sb.String()
+}
+
+// countSnapshots returns how many pre-sync snapshots live on disk. Used to
+// give the Home dashboard a pulse of "something has happened here".
+func countSnapshots(ctx *AppContext) int {
+	snaps, err := snapshot.List(filepath.Join(ctx.StateDir, "snapshots"))
+	if err != nil {
+		return 0
+	}
+	return len(snaps)
 }
