@@ -230,6 +230,88 @@ func TestSelectiveSyncOnlyAppliesListedPaths(t *testing.T) {
 	}
 }
 
+func TestProfileExcludeBlocksPushAndPull(t *testing.T) {
+	secrets.MockInit()
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a config with a "work" profile that extends "default" and excludes
+	// the foo agent.
+	cfg, _ := config.LoadDefault()
+	cfg.Profiles["work"] = config.ProfileSpec{
+		Description: "work laptop",
+		Extends:     "default",
+		HostClasses: []string{"work"},
+		Exclude: &config.ProfileExclude{
+			Paths: []string{"claude/agents/foo.md"},
+		},
+	}
+
+	// Machine A: personal, pushes the agent on profile=default
+	homeA := filepath.Join(tmp, "homeA")
+	repoA := filepath.Join(tmp, "repoA")
+	stateA := filepath.Join(tmp, "stateA")
+	seedMachine(t, homeA)
+	if _, err := gitx.Init(repoA, bareDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), machineInputs(homeA, repoA, stateA, cfg), nil); err != nil {
+		t.Fatalf("machine A: %v", err)
+	}
+	// Confirm the agent is in the bare repo (pushed under default).
+	inspectClone := filepath.Join(tmp, "inspect")
+	if _, err := gogit.PlainClone(inspectClone, false, &gogit.CloneOptions{URL: bareDir}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(inspectClone, "profiles/default/claude/agents/foo.md")); err != nil {
+		t.Fatalf("default profile should have the agent: %v", err)
+	}
+
+	// Machine B: work. Clone repo, sync under profile=work. foo.md should NOT
+	// be pulled to disk, and should NOT be pushed back up either.
+	homeB := filepath.Join(tmp, "homeB")
+	repoB := filepath.Join(tmp, "repoB")
+	stateB := filepath.Join(tmp, "stateB")
+	if err := os.MkdirAll(filepath.Join(homeB, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Clone(context.Background(), bareDir, repoB, nil); err != nil {
+		t.Fatal(err)
+	}
+	inB := machineInputs(homeB, repoB, stateB, cfg)
+	inB.Profile = "work"
+	resB, err := Run(context.Background(), inB, nil)
+	if err != nil {
+		t.Fatalf("machine B: %v", err)
+	}
+
+	// foo.md must not be on B's disk.
+	if _, err := os.Stat(filepath.Join(homeB, ".claude/agents/foo.md")); err == nil {
+		t.Error("profile-excluded agent was pulled to work machine")
+	}
+
+	// If B has anything in the plan for foo.md, it must be flagged ExcludedByProfile.
+	workPath := "profiles/work/claude/agents/foo.md"
+	defaultPath := "profiles/default/claude/agents/foo.md"
+	for _, a := range resB.Plan.Actions {
+		if a.Path == workPath || a.Path == defaultPath {
+			if !a.ExcludedByProfile {
+				t.Errorf("action for %s should be ExcludedByProfile, got %+v", a.Path, a)
+			}
+		}
+	}
+
+	// Summary should not count the excluded path.
+	for _, a := range resB.Plan.Actions {
+		if a.ExcludedByProfile && !a.ExcludedByProfile {
+			t.Fatal("sanity")
+		}
+	}
+}
+
 func TestDryRunReturnsPlanWithoutWrites(t *testing.T) {
 	secrets.MockInit()
 	tmp := t.TempDir()

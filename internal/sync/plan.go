@@ -11,9 +11,10 @@ import (
 
 // FileAction is the per-file outcome decided by the sync engine.
 type FileAction struct {
-	Path     string          // repo-relative (e.g. profiles/default/claude/foo)
-	LocalAbs string          // absolute path in user's ~/.claude or "" for .claude.json
-	Action   manifest.Action // Decide() output
+	Path              string          // repo-relative (e.g. profiles/default/claude/foo)
+	LocalAbs          string          // absolute path in user's ~/.claude or "" for .claude.json
+	Action            manifest.Action // Decide() output (before profile filtering)
+	ExcludedByProfile bool            // this path is filtered out by the active profile; treat as NoOp
 }
 
 // FileConflict bundles the per-file merge conflicts plus the raw bytes on
@@ -34,9 +35,13 @@ type Plan struct {
 	Conflicts []FileConflict
 }
 
-// Summary returns +<added> ~<modified> -<deleted> counts.
+// Summary returns +<added> ~<modified> -<deleted> counts. Profile-excluded
+// actions don't count toward any bucket.
 func (p Plan) Summary() (added, modified, deleted int) {
 	for _, a := range p.Actions {
+		if a.ExcludedByProfile {
+			continue
+		}
 		switch a.Action {
 		case manifest.ActionAddLocal, manifest.ActionAddRemote:
 			added++
@@ -47,6 +52,18 @@ func (p Plan) Summary() (added, modified, deleted int) {
 		}
 	}
 	return
+}
+
+// ExcludedPaths returns the repo paths that the active profile filtered out
+// for this run. Useful for "why isn't this syncing?" diagnostics.
+func (p Plan) ExcludedPaths() []string {
+	var out []string
+	for _, a := range p.Actions {
+		if a.ExcludedByProfile {
+			out = append(out, a.Path)
+		}
+	}
+	return out
 }
 
 // Result is the output of Run.

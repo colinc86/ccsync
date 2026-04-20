@@ -107,6 +107,42 @@ func (p *Pattern) walk(node interface{}, pathSoFar string, idx int, out *[]strin
 	}
 }
 
+// MatchPath reports whether a concrete dot-path (e.g.
+// "mcpServers.gemini.env.KEY" — note: no leading "$.") would be matched by
+// this pattern. Useful when you have a path string but no document to walk.
+func (p *Pattern) MatchPath(path string) bool {
+	var parts []string
+	if path != "" {
+		parts = strings.Split(path, ".")
+	}
+	return matchSegs(p.segs, 0, parts, 0)
+}
+
+func matchSegs(segs []segment, si int, parts []string, pi int) bool {
+	if si == len(segs) {
+		return pi == len(parts)
+	}
+	seg := segs[si]
+	if seg.Recursive {
+		// Try matching "zero parts consumed by this segment" first, then grow.
+		for k := pi; k <= len(parts); k++ {
+			if k < len(parts) && (seg.Wildcard || seg.Key == parts[k]) {
+				if matchSegs(segs, si+1, parts, k+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if pi >= len(parts) {
+		return false
+	}
+	if !(seg.Wildcard || seg.Key == parts[pi]) {
+		return false
+	}
+	return matchSegs(segs, si+1, parts, pi+1)
+}
+
 func readName(s string) (name, rest string) {
 	i := 0
 	for i < len(s) {

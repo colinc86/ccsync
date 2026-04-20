@@ -129,7 +129,12 @@ func (m *syncPreviewModel) View() string {
 	}
 
 	shown := 0
+	excluded := 0
 	for _, a := range m.plan.Actions {
+		if a.ExcludedByProfile {
+			excluded++
+			continue
+		}
 		if a.Action == manifest.ActionNoOp {
 			continue
 		}
@@ -150,6 +155,12 @@ func (m *syncPreviewModel) View() string {
 			}
 			sb.WriteString("  ! " + c.Path + "\n")
 		}
+	}
+
+	if excluded > 0 {
+		sb.WriteString("\n" + theme.Hint.Render(
+			fmt.Sprintf("%d path(s) excluded by profile %q — run `ccsync why <path>` to see which rule",
+				excluded, m.ctx.State.ActiveProfile)) + "\n")
 	}
 
 	sb.WriteString("\n" + theme.Primary.Render("enter ") + "apply all • " +

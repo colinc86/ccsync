@@ -19,6 +19,7 @@ import (
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/tui"
 	"github.com/colinc86/ccsync/internal/updater"
+	"github.com/colinc86/ccsync/internal/why"
 )
 
 const version = "0.1.0"
@@ -43,6 +44,8 @@ func main() {
 			os.Exit(runRollback(os.Args[2:]))
 		case "update":
 			os.Exit(runUpdate(os.Args[2:]))
+		case "why":
+			os.Exit(runWhy(os.Args[2:]))
 		case "--help", "-h":
 			printHelp()
 			return
@@ -75,6 +78,7 @@ Usage:
   ccsync rollback                     restore local files from latest snapshot
   ccsync rollback --commit SHA        revert repo+local to a specific commit
   ccsync doctor                       run integrity checks
+  ccsync why <path>                   trace which rules apply to a path
   ccsync update [--check] [--force]   install the latest release in place
   ccsync --version                    print version`)
 }
@@ -407,6 +411,48 @@ func runRollbackCommit(commitSHA string) int {
 			len(res.MissingSecrets))
 		return 3
 	}
+	return 0
+}
+
+func runWhy(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "ccsync why: provide a path, e.g.")
+		fmt.Fprintln(os.Stderr, "  ccsync why claude/agents/foo.md")
+		fmt.Fprintln(os.Stderr, "  ccsync why ~/.claude.json:'$.mcpServers.gemini'")
+		return 1
+	}
+	target := args[0]
+
+	ctx, err := tui.NewContext()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	profileName := ctx.State.ActiveProfile
+	if profileName == "" {
+		profileName = "default"
+	}
+
+	// Prefer the repo's .syncignore when present; otherwise defaults.
+	syncignore := ctx.Config.DefaultSyncignore
+	if ctx.State.SyncRepoURL != "" {
+		if data, err := os.ReadFile(filepath.Join(ctx.RepoPath, ".syncignore")); err == nil {
+			syncignore = string(data)
+		}
+	}
+
+	tr, err := why.Explain(why.Inputs{
+		Config:     ctx.Config,
+		Profile:    profileName,
+		Syncignore: syncignore,
+		ClaudeDir:  ctx.ClaudeDir,
+		ClaudeJSON: ctx.ClaudeJSON,
+	}, target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync why:", err)
+		return 1
+	}
+	fmt.Print(why.Format(tr))
 	return 0
 }
 

@@ -18,6 +18,15 @@ jsonFiles:
       - $.numStartups
       - $.userID
       - $.claudeCodeFirstTokenDate
+      # account/login state — tied to whichever email is logged in on each
+      # machine. Never sync; keeps work/personal logins from colliding.
+      - $.oauthAccount
+      - $.tipsHistory
+      - $.firstStartTime
+      - $.hasCompletedOnboarding
+      - $.lastOnboardingVersion
+      - $.subscriptionNoticeCount
+      - $.hasAvailableSubscription
     redact:
       - $.mcpServers.*.env.*
       - $..apiKey

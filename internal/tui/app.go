@@ -141,16 +141,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// View renders the top screen inside a titled card.
+// View renders the top screen inside a titled card. A persistent status bar
+// below the body keeps profile / exclude / host-class context visible on
+// every screen.
 func (m AppModel) View() string {
 	if len(m.screens) == 0 {
 		return ""
 	}
 	top := m.screens[len(m.screens)-1]
 	header := theme.Heading.Render(top.Title())
+	status := statusBar(m.ctx)
 	footer := theme.Hint.Render("esc back • ctrl+c quit")
 	body := top.View()
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", status, footer)
 }
 
 // switchScreenMsg pushes a new screen on top of the stack.

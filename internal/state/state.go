@@ -29,6 +29,7 @@ type State struct {
 	HTTPSUser     string            `json:"httpsUser,omitempty"`
 	ActiveProfile string            `json:"activeProfile,omitempty"`
 	HostUUID      string            `json:"hostUUID,omitempty"`
+	HostClass     string            `json:"hostClass,omitempty"` // freeform label (work, personal); informational for now
 	LastSyncedSHA map[string]string `json:"lastSyncedSHA,omitempty"`
 }
 

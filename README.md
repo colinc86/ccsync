@@ -76,6 +76,38 @@ ccsync profile create work "work machine config"
 ccsync profile use work       # pre-switch backup taken automatically
 ```
 
+### Inheritance + exclusions
+
+A profile can extend another and filter out what shouldn't land on this machine. Typical use: a `work` profile that pulls most of your personal config but excludes personal-only agents and MCP servers.
+
+```yaml
+# ccsync.yaml
+profiles:
+  default:
+    description: personal
+  work:
+    extends: default
+    description: work laptop
+    hostClasses: [work]
+    exclude:
+      paths:
+        - claude/agents/personal-*.md
+        - claude/skills/shopping-*/**
+```
+
+On `ccsync profile use work`, the excluded paths are **invisible** to sync on that machine — they aren't pulled down, and aren't pushed up from there either. No duplication, one source of truth in the repo.
+
+## Why isn't this syncing?
+
+The single most predictable question gets a direct answer:
+
+```sh
+ccsync why claude/agents/personal-notes.md
+ccsync why ~/.claude.json:'$.mcpServers.gemini.env.GEMINI_API_KEY'
+```
+
+Walks every rule that could have touched the path (`.syncignore`, profile `exclude`, `jsonFiles` include/exclude/redact) and prints the trace showing which rule fired. Pure static evaluation — doesn't require a sync run.
+
 ## Safety
 
 The single biggest risk of a sync tool is silent data loss. ccsync defends against it in layers:
@@ -110,6 +142,7 @@ ccsync snapshot restore <id>        restore local files from a snapshot
 ccsync rollback                     restore local files from latest snapshot
 ccsync rollback --commit SHA        revert repo+local to a specific commit
 ccsync doctor                       run integrity checks
+ccsync why <path>                   trace which rules apply to a path
 ccsync update [--check] [--force]   install the latest release in place
 ccsync --version
 ```

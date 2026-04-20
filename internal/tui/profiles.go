@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -81,13 +83,37 @@ func (m *profilesModel) View() string {
 		if name == m.ctx.State.ActiveProfile {
 			marker = theme.Good.Render(" (active)")
 		}
-		desc := m.ctx.Config.Profiles[name].Description
+		spec := m.ctx.Config.Profiles[name]
+		desc := spec.Description
 		line := name + marker
 		if desc != "" {
 			line += "  " + theme.Hint.Render("— "+desc)
 		}
 		sb.WriteString(cursor + line + "\n")
+
+		details := profileDetails(m.ctx.Config, name, spec)
+		if details != "" {
+			sb.WriteString("    " + theme.Hint.Render(details) + "\n")
+		}
 	}
 	sb.WriteString("\n" + theme.Hint.Render("enter switches to selected profile"))
 	return sb.String()
+}
+
+// profileDetails renders one-line info about a profile's extends chain,
+// exclude count, and host classes. Empty string when none apply.
+func profileDetails(cfg *config.Config, name string, spec config.ProfileSpec) string {
+	var parts []string
+	if resolved, err := config.EffectiveProfile(cfg, name); err == nil {
+		if len(resolved.Chain) > 1 {
+			parts = append(parts, "extends "+strings.Join(resolved.Chain[1:], " ← "))
+		}
+		if n := len(resolved.PathExcludes); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d exclude rule(s)", n))
+		}
+	}
+	if len(spec.HostClasses) > 0 {
+		parts = append(parts, "host-class: "+strings.Join(spec.HostClasses, ","))
+	}
+	return strings.Join(parts, " • ")
 }

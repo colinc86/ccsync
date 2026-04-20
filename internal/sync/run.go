@@ -92,6 +92,15 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		matcher = ignore.New(string(data))
 	}
 
+	resolvedProfile, err := config.EffectiveProfile(in.Config, in.Profile)
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve profile %q: %w", in.Profile, err)
+	}
+	var profileMatcher *ignore.Matcher
+	if resolvedProfile.HasExcludes() {
+		profileMatcher = ignore.New(resolvedProfile.ExcludeRules())
+	}
+
 	emit("discover", "walking local Claude config", "")
 	disc, err := discover.Walk(discover.Inputs{
 		ClaudeDir:  in.ClaudeDir,
@@ -106,11 +115,18 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 
 	localEntries := map[string]*localFile{}
 	for _, e := range disc.Tracked {
+		repoPath := profilePrefix + e.RelPath
+		// Profile excludes — don't read the file, don't filter it, don't
+		// keyring-store any redactions it would've contained. The main loop
+		// will still surface it in the plan if it exists on the remote, via
+		// the ExcludedByProfile flag.
+		if profileExcluded(profileMatcher, repoPath, profilePrefix) {
+			continue
+		}
 		data, err := os.ReadFile(e.AbsPath)
 		if err != nil {
 			return Result{}, fmt.Errorf("read %s: %w", e.AbsPath, err)
 		}
-		repoPath := profilePrefix + e.RelPath
 		lf := &localFile{abs: e.AbsPath, data: data}
 		if rule, ok := jsonRules[e.AbsPath]; ok {
 			res, err := jsonfilter.Apply(data, rule, in.Profile)
@@ -182,9 +198,18 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		if localAbs == "" {
 			localAbs = repoPathToLocal(path, in.Profile, in.ClaudeDir, in.ClaudeJSON)
 		}
+		excluded := profileExcluded(profileMatcher, path, profilePrefix)
 		plan.Actions = append(plan.Actions, FileAction{
 			Path: path, LocalAbs: localAbs, Action: action,
+			ExcludedByProfile: excluded,
 		})
+
+		// Profile excludes take precedence over everything else. The file is
+		// invisible to this machine's sync; we neither push nor pull nor
+		// delete. If it already exists locally, the user can remove it by hand.
+		if excluded {
+			continue
+		}
 
 		// Selective sync: only apply actions for paths in the filter.
 		if in.Selective() && !in.OnlyPaths[path] {
@@ -466,4 +491,19 @@ func jsonString(b []byte) string {
 		return ""
 	}
 	return string(b)
+}
+
+// profileExcluded reports whether a repo path (profiles/<name>/<rel>) matches
+// the active profile's exclude rules. Rules are written relative to the
+// sync-repo tree (e.g. "claude/agents/secret-*.md"), so we strip the profile
+// prefix before testing.
+func profileExcluded(m *ignore.Matcher, repoPath, profilePrefix string) bool {
+	if m == nil {
+		return false
+	}
+	rel := strings.TrimPrefix(repoPath, profilePrefix)
+	if rel == repoPath { // path didn't carry the profile prefix
+		return false
+	}
+	return m.Matches(rel)
 }
