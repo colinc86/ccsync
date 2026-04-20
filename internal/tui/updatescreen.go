@@ -40,7 +40,7 @@ const (
 	updateStepDone
 )
 
-type updateCheckDoneMsg struct {
+type updateScreenCheckMsg struct {
 	latest string
 	err    error
 }
@@ -78,7 +78,7 @@ func (m *updateScreenModel) CapturesEscape() bool {
 func checkLatestCmd() tea.Cmd {
 	return func() tea.Msg {
 		tag, err := updater.LatestTag()
-		return updateCheckDoneMsg{latest: tag, err: err}
+		return updateScreenCheckMsg{latest: tag, err: err}
 	}
 }
 
@@ -103,7 +103,7 @@ func (m *updateScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
 
-	case updateCheckDoneMsg:
+	case updateScreenCheckMsg:
 		m.err = msg.err
 		m.latest = msg.latest
 		switch {

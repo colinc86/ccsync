@@ -71,6 +71,12 @@ type State struct {
 	// the Suggestions screen. The suggester filters these out so nothing
 	// gets re-proposed after dismissal.
 	DismissedSuggestions []string `json:"dismissedSuggestions,omitempty"`
+
+	// UpdateMode controls self-update behaviour. Empty or "manual" means
+	// the app only checks/installs when the user explicitly asks; "auto"
+	// silently installs a new version in the background when one is
+	// available. Homebrew-installed binaries are never auto-replaced.
+	UpdateMode string `json:"updateMode,omitempty"`
 }
 
 // FetchIntervalDuration returns the parsed fetch interval, or zero when the

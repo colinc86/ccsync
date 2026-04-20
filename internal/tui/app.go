@@ -17,6 +17,7 @@ import (
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
+	"github.com/colinc86/ccsync/internal/updater"
 )
 
 // AppContext bundles shared state passed to every screen.
@@ -45,6 +46,15 @@ type AppContext struct {
 	// (its embedded gen won't match). Prevents duplicate tickers after
 	// repeated setting changes.
 	TickGen int
+
+	// Update-check cache. Populated by the background checker; read by
+	// Settings to show availability inline. LatestVersion is the tag
+	// string ("v0.4.0"); UpdateAvailable is true iff it differs from the
+	// running binary's version.
+	LatestVersion   string
+	UpdateAvailable bool
+	UpdateCheckedAt time.Time
+	UpdateCheckErr  error
 }
 
 // ConfigPath returns the on-disk ccsync.yaml path. Before bootstrap, an
@@ -146,10 +156,16 @@ func New(ctx *AppContext) AppModel {
 	}
 }
 
-// Init satisfies tea.Model. Kicks off the first status refresh and, if the
-// user has opted into a periodic refresh, schedules the next tick.
+// Init satisfies tea.Model. Kicks off the first status refresh, schedules
+// the next periodic refresh if opted in, and triggers a one-shot update
+// check plus its own daily cadence.
 func (m AppModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{refreshPlanCmd(m.ctx), schedulePeriodicRefresh(m.ctx)}
+	cmds := []tea.Cmd{
+		refreshPlanCmd(m.ctx),
+		schedulePeriodicRefresh(m.ctx),
+		checkForUpdateCmd(),
+		schedulePeriodicUpdateCheck(),
+	}
 	if len(m.screens) > 0 {
 		cmds = append(cmds, m.screens[0].Init())
 	}
@@ -222,6 +238,32 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.Batch(refreshPlanCmd(m.ctx), schedulePeriodicRefresh(m.ctx))
+
+	case updateCheckDoneMsg:
+		m.ctx.LatestVersion = msg.latest
+		m.ctx.UpdateCheckedAt = msg.at
+		m.ctx.UpdateCheckErr = msg.err
+		m.ctx.UpdateAvailable = msg.err == nil &&
+			msg.latest != "" &&
+			msg.latest != "v"+updater.CurrentVersion()
+		// If the user opted into auto-install, silently dispatch it. The
+		// returned cmd is nil when conditions don't apply (manual mode,
+		// Homebrew install, no newer version), which tea.Batch skips.
+		return m, autoInstallIfNeeded(m.ctx)
+
+	case autoInstallDoneMsg:
+		// Silent by design — auto mode doesn't notify. On success, the
+		// running process keeps its inode of the old binary (Unix inode
+		// semantics); the next launch picks up the new version. Clear
+		// the pending flag so the Settings row stops showing "available".
+		if msg.err == nil {
+			m.ctx.UpdateAvailable = false
+		}
+		return m, nil
+
+	case periodicUpdateCheckTickMsg:
+		// Re-run the check and schedule another tick for ~24h from now.
+		return m, tea.Batch(checkForUpdateCmd(), schedulePeriodicUpdateCheck())
 	}
 
 	top := m.screens[len(m.screens)-1]

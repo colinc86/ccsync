@@ -281,7 +281,30 @@ func (m *settingsModel) buildRows() {
 
 		// --- about / maintenance ---
 		heading("about"),
-		display("ccsync version", "v"+updater.CurrentVersion()),
+		{
+			label: "ccsync version", kind: kindDisplay,
+			value: func() string {
+				v := "v" + updater.CurrentVersion()
+				if ctx.UpdateAvailable {
+					v += "  " + theme.Warn.Render("· update available: "+ctx.LatestVersion)
+				}
+				return v
+			},
+		},
+		{
+			label: "update mode", kind: kindRadio,
+			options: []string{"manual", "auto"},
+			value:   func() string { return updateModeLabel(ctx.State.UpdateMode) },
+			cycle: func() error {
+				switch ctx.State.UpdateMode {
+				case "", "manual":
+					ctx.State.UpdateMode = "auto"
+				default:
+					ctx.State.UpdateMode = "manual"
+				}
+				return state.Save(ctx.StateDir, ctx.State)
+			},
+		},
 		{
 			label: "check for updates", kind: kindAction,
 			value: func() string { return theme.Hint.Render("opens update checker") },
@@ -378,6 +401,16 @@ func boolLabel(b bool) string {
 		return theme.Good.Render("on")
 	}
 	return "off"
+}
+
+func updateModeLabel(s string) string {
+	switch s {
+	case "auto":
+		return theme.Good.Render("auto") + theme.Hint.Render(" — installs new versions silently in the background")
+	case "", "manual":
+		return "manual" + theme.Hint.Render(" — you trigger each update")
+	}
+	return s
 }
 
 func fetchIntervalLabel(s string) string {
@@ -539,6 +572,12 @@ func (m *settingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if row.label == "background fetch" {
 						m.ctx.TickGen++
 						return m, tea.Batch(refreshPlanCmd(m.ctx), schedulePeriodicRefresh(m.ctx))
+					}
+					// Flipping to auto when an update is already pending
+					// should kick the install immediately rather than wait
+					// for the next 24h tick.
+					if row.label == "update mode" {
+						return m, autoInstallIfNeeded(m.ctx)
 					}
 				}
 			case kindBool:
