@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,6 +25,11 @@ type syncPreviewModel struct {
 	err     error
 	plan    sync.Plan
 	spin    spinner.Model
+
+	// visible is the filtered action list the user can cursor through
+	// (profile-excluded and no-op actions skipped). Recomputed on load.
+	visible []int // indices into plan.Actions
+	cursor  int
 }
 
 func newSyncPreview(ctx *AppContext) *syncPreviewModel {
@@ -110,6 +116,7 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.err = msg.err
 		m.plan = msg.plan
+		m.recomputeVisible()
 		// This screen already paid for a dry-run; cache it so the status bar
 		// and Home dashboard use the same plan without a second network hit.
 		if m.err == nil {
@@ -128,9 +135,45 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.loading && m.err == nil {
 				return m, switchTo(newSync(m.ctx))
 			}
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.visible)-1 {
+				m.cursor++
+			}
+		case "d":
+			if len(m.visible) == 0 {
+				return m, nil
+			}
+			a := m.plan.Actions[m.visible[m.cursor]]
+			before, after := diffBytesForAction(m.ctx, a, m.plan.Conflicts)
+			return m, switchTo(newDiffView(a.Path, before, after))
 		case "s":
 			if !m.loading && m.err == nil {
 				return m, switchTo(newSelectiveSync(m.ctx, m.plan))
+			}
+		case "p":
+			// Pull-only: apply just the paths coming down from the repo.
+			// Implemented via the selective-sync orchestrator (one-shot
+			// filter; LastSyncedSHA doesn't advance, so pending pushes
+			// remain for next time).
+			if !m.loading && m.err == nil {
+				only := directionFilter(m.plan, false /*wantPush*/)
+				if len(only) == 0 {
+					return m, nil
+				}
+				return m, switchTo(newDirectionalSync(m.ctx, only))
+			}
+		case "u":
+			// Push-only: apply just the paths going up to the repo.
+			if !m.loading && m.err == nil {
+				only := directionFilter(m.plan, true /*wantPush*/)
+				if len(only) == 0 {
+					return m, nil
+				}
+				return m, switchTo(newDirectionalSync(m.ctx, only))
 			}
 		}
 	}
@@ -169,11 +212,26 @@ func (m *syncPreviewModel) View() string {
 		}
 	}
 
+	// First-sync banner: when we've never synced on this machine, the
+	// stakes are higher (push commits become the baseline for the repo;
+	// pull introduces a wave of brand-new local files). Loud banner makes
+	// sure the user pauses.
+	profile := m.ctx.State.ActiveProfile
+	if m.ctx.State.LastSyncedSHA[profile] == "" {
+		sb.WriteString(theme.Warn.Render(
+			"⚑ first sync on this machine — review carefully before applying") + "\n\n")
+	}
+
 	fmt.Fprintf(&sb, "%s   %s   %s\n",
 		theme.Warn.Render(fmt.Sprintf("↑ %d push", len(push))),
 		theme.Warn.Render(fmt.Sprintf("↓ %d pull", len(pull))),
 		theme.Bad.Render(fmt.Sprintf("! %d conflict", len(m.plan.Conflicts))),
 	)
+
+	// Plain-English recap so a user doesn't have to decode the arrows.
+	if summary := naturalLanguageSummary(push, pull, m.plan.Conflicts); summary != "" {
+		sb.WriteString(theme.Hint.Render(summary) + "\n")
+	}
 	sb.WriteString("\n")
 
 	if len(push)+len(pull)+len(m.plan.Conflicts) == 0 {
@@ -186,6 +244,11 @@ func (m *syncPreviewModel) View() string {
 		return sb.String()
 	}
 
+	// Which visible index corresponds to the cursor? Compute once.
+	cursorPath := ""
+	if len(m.visible) > 0 && m.cursor >= 0 && m.cursor < len(m.visible) {
+		cursorPath = m.plan.Actions[m.visible[m.cursor]].Path
+	}
 	writeGroup := func(label string, actions []sync.FileAction) {
 		if len(actions) == 0 {
 			return
@@ -196,7 +259,11 @@ func (m *syncPreviewModel) View() string {
 				fmt.Fprintf(&sb, theme.Hint.Render("  … %d more\n"), len(actions)-i)
 				break
 			}
-			fmt.Fprintf(&sb, "  %s %s\n", actionGlyph(a.Action), a.Path)
+			cursor := "  "
+			if a.Path == cursorPath {
+				cursor = theme.Primary.Render("▸ ")
+			}
+			fmt.Fprintf(&sb, "%s%s %s\n", cursor, actionGlyph(a.Action), a.Path)
 		}
 		sb.WriteString("\n")
 	}
@@ -221,9 +288,13 @@ func (m *syncPreviewModel) View() string {
 				excluded, m.ctx.State.ActiveProfile)) + "\n")
 	}
 
-	sb.WriteString("\n" + theme.Primary.Render("enter ") + "apply all • " +
+	sb.WriteString("\n" +
+		theme.Primary.Render("enter ") + "apply all • " +
+		theme.Primary.Render("p ") + "pull only • " +
+		theme.Primary.Render("u ") + "push only • " +
+		theme.Primary.Render("d ") + "diff • " +
 		theme.Primary.Render("s ") + "selective • " +
-		theme.Hint.Render("esc cancel"))
+		theme.Hint.Render("↑↓ move • esc cancel"))
 	return sb.String()
 }
 
@@ -232,6 +303,161 @@ func (m *syncPreviewModel) View() string {
 // conflicts. An empty plan (nothing to do) is also "clean" — no-op apply.
 func (m *syncPreviewModel) planIsClean() bool {
 	return len(m.plan.Conflicts) == 0
+}
+
+// recomputeVisible rebuilds m.visible to hold indices of actions that are
+// worth showing the user — actual work, not no-ops or profile-excluded.
+func (m *syncPreviewModel) recomputeVisible() {
+	m.visible = m.visible[:0]
+	for i, a := range m.plan.Actions {
+		if a.ExcludedByProfile {
+			continue
+		}
+		if a.Action == manifest.ActionNoOp {
+			continue
+		}
+		m.visible = append(m.visible, i)
+	}
+	if m.cursor >= len(m.visible) {
+		m.cursor = 0
+	}
+}
+
+// diffBytesForAction returns the (before, after) byte pair to show in the
+// diff viewer for a given action. The orientation follows what's about to
+// happen: "before" is the side that will be replaced, "after" is the side
+// that will win. Conflict rows get their bytes from the plan's conflict
+// record; everything else reads from disk lazily.
+func diffBytesForAction(ctx *AppContext, a sync.FileAction, conflicts []sync.FileConflict) (before, after []byte) {
+	for _, fc := range conflicts {
+		if fc.Path == a.Path {
+			return fc.LocalData, fc.RemoteData
+		}
+	}
+	localAbs := a.LocalAbs
+	repoAbs := filepath.Join(ctx.RepoPath, a.Path)
+
+	// Read each side best-effort. Missing files map to nil, which
+	// renderUnifiedDiff handles (shows "no changes" or an add/delete).
+	localData, _ := safeReadFile(localAbs)
+	repoData, _ := safeReadFile(repoAbs)
+
+	switch a.Action {
+	case manifest.ActionAddRemote, manifest.ActionPush, manifest.ActionDeleteRemote:
+		// Moving local → repo. Before = repo (old), after = local (new).
+		return repoData, localData
+	case manifest.ActionAddLocal, manifest.ActionPull, manifest.ActionDeleteLocal:
+		// Moving repo → local. Before = local (old), after = repo (new).
+		return localData, repoData
+	case manifest.ActionMerge:
+		// Ambiguous; show the merge-product by convention: local vs remote
+		// in that order so "+" lines are what's in the repo.
+		return localData, repoData
+	}
+	return localData, repoData
+}
+
+// safeReadFile reads a file, returning nil bytes (not an error) when the
+// path is empty or the file is absent — appropriate for diff inputs where
+// "file not present" is a valid state.
+func safeReadFile(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
+}
+
+// naturalLanguageSummary builds a short human recap of what the plan will
+// do. Returns "" for an empty plan so callers don't render a blank row.
+//
+// Examples:
+//   "This sync will pull 5 files from the repo to ~/.claude."
+//   "This sync will push 3 local files up to the repo and pull 2 down."
+//   "This sync has 1 conflict — resolve before applying."
+func naturalLanguageSummary(push, pull []sync.FileAction, conflicts []sync.FileConflict) string {
+	var parts []string
+	if n := len(push); n > 0 {
+		parts = append(parts, fmt.Sprintf("push %d local file%s up to the repo",
+			n, plural(n)))
+	}
+	if n := len(pull); n > 0 {
+		parts = append(parts, fmt.Sprintf("pull %d file%s down into ~/.claude",
+			n, plural(n)))
+	}
+	if len(parts) == 0 && len(conflicts) == 0 {
+		return ""
+	}
+	var out string
+	switch len(parts) {
+	case 0:
+		// only conflicts — handled below
+	case 1:
+		out = "This sync will " + parts[0] + "."
+	case 2:
+		out = "This sync will " + parts[0] + " and " + parts[1] + "."
+	}
+	if n := len(conflicts); n > 0 {
+		c := fmt.Sprintf(" %d conflict%s need%s manual resolution.", n, plural(n), oneIfSingular(n))
+		out += c
+	}
+	return out
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// oneIfSingular returns "" for a singular subject ("1 conflict needs…") and
+// "s" for plural ("2 conflicts need…") — matches subject-verb agreement for
+// the specific pattern in naturalLanguageSummary.
+func oneIfSingular(n int) string {
+	if n == 1 {
+		return "s"
+	}
+	return ""
+}
+
+// directionFilter returns the set of repo paths on one side of the sync:
+// wantPush=true → only paths being sent up; wantPush=false → only paths
+// coming down. Profile-excluded and no-op actions are skipped.
+func directionFilter(plan sync.Plan, wantPush bool) map[string]bool {
+	out := map[string]bool{}
+	for _, a := range plan.Actions {
+		if a.ExcludedByProfile || a.Action == manifest.ActionNoOp {
+			continue
+		}
+		if wantPush && isPushAction(a.Action) {
+			out[a.Path] = true
+		}
+		if !wantPush && isPullAction(a.Action) {
+			out[a.Path] = true
+		}
+		if a.Action == manifest.ActionMerge {
+			// Merges touch both sides; include in whichever direction.
+			out[a.Path] = true
+		}
+	}
+	return out
+}
+
+// newDirectionalSync kicks off a selective sync with a pre-built filter.
+// The user doesn't see the selective-sync toggle screen — they've already
+// chosen the direction in SyncPreview, so we go straight to the running
+// Sync screen.
+func newDirectionalSync(ctx *AppContext, only map[string]bool) *syncModel {
+	m := newSync(ctx)
+	m.onlyPaths = only
+	return m
 }
 
 // isPushAction reports whether this action moves data repo-ward.

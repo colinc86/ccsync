@@ -17,6 +17,7 @@ import (
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
+	"github.com/colinc86/ccsync/internal/updater"
 )
 
 // settingsModel is a cursor-driven list where each row is either a read-only
@@ -244,6 +245,23 @@ func (m *settingsModel) buildRows() {
 			},
 		},
 
+		{
+			label: "repo encryption", kind: kindAction,
+			value: func() string {
+				switch detectEncStatus(ctx) {
+				case encOn:
+					return theme.Good.Render("on")
+				case encLocked:
+					return theme.Warn.Render("on (locked — needs unlock)")
+				default:
+					return theme.Hint.Render("off")
+				}
+			},
+			run: func(m *settingsModel) tea.Cmd {
+				return switchTo(newEncryptionScreen(m.ctx))
+			},
+		},
+
 		// --- config files ---
 		heading("config files"),
 		{
@@ -258,6 +276,17 @@ func (m *settingsModel) buildRows() {
 			value: func() string { return theme.Hint.Render("opens $EDITOR") },
 			run: func(m *settingsModel) tea.Cmd {
 				return editConfigFileCmd(filepath.Join(m.ctx.RepoPath, ".syncignore"), false)
+			},
+		},
+
+		// --- about / maintenance ---
+		heading("about"),
+		display("ccsync version", "v"+updater.CurrentVersion()),
+		{
+			label: "check for updates", kind: kindAction,
+			value: func() string { return theme.Hint.Render("opens update checker") },
+			run: func(m *settingsModel) tea.Cmd {
+				return switchTo(newUpdateScreen(m.ctx))
 			},
 		},
 

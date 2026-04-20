@@ -141,11 +141,26 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		localEntries[repoPath] = lf
 	}
 
+	// Load the encryption marker once per run — drives maybeEncrypt /
+	// maybeDecrypt below. Missing marker == plaintext repo (default).
+	encKey, err := loadRepoEncryptionKey(in.RepoPath)
+	if err != nil {
+		return Result{}, err
+	}
+
 	remoteEntries := map[string][]byte{}
 	if !empty {
 		entries, err := readProfileTreeFromWorktree(in.RepoPath, profilePrefix)
 		if err != nil {
 			return Result{}, err
+		}
+		// Decrypt any files that were stored encrypted.
+		for p, data := range entries {
+			if plain, err := maybeDecrypt(encKey, data); err != nil {
+				return Result{}, fmt.Errorf("decrypt %s: %w", p, err)
+			} else {
+				entries[p] = plain
+			}
 		}
 		remoteEntries = entries
 	}
@@ -335,7 +350,11 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return Result{}, err
 		}
-		if err := writeFileAtomic(abs, data); err != nil {
+		payload, err := maybeEncrypt(encKey, path, data)
+		if err != nil {
+			return Result{}, fmt.Errorf("encrypt %s: %w", path, err)
+		}
+		if err := writeFileAtomic(abs, payload); err != nil {
 			return Result{}, err
 		}
 	}
@@ -370,7 +389,7 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		if err := repo.AddAll(); err != nil {
 			return Result{}, err
 		}
-		msg := commitMessage(in.Profile, in.HostName, plan)
+		msg := commitMessage(in.Profile, in.HostName, plan, remoteEntries, pendingRepoWrites)
 		commitSHA, err = repo.Commit(msg, in.HostName, in.AuthorEmail)
 		if err != nil {
 			return Result{}, err

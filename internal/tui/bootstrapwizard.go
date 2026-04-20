@@ -108,7 +108,14 @@ func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stepConfirm:
 			return m.updateConfirm(msg)
 		case stepDone:
-			return m, popScreen()
+			// After a successful bootstrap, the most likely next thing the
+			// user wants is to preview the first sync — show them what's
+			// about to change before they apply. On error or cancel they
+			// just pop back to Home.
+			if m.err != nil || m.done == nil {
+				return m, popScreen()
+			}
+			return m, tea.Batch(popScreen(), switchTo(newSyncPreview(m.ctx)))
 		}
 	}
 	return m, nil
@@ -270,7 +277,8 @@ func (m *bootstrapWizardModel) View() string {
 		sb.WriteString(theme.Good.Render("bootstrapped ✓") + "\n\n")
 		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("repo:"), m.done.SyncRepoURL)
 		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("profile:"), m.done.ActiveProfile)
-		sb.WriteString("\n" + theme.Hint.Render("press any key to return to home"))
+		sb.WriteString("\n" +
+			theme.Hint.Render("nothing has synced yet — press any key to preview what would change"))
 	}
 	return sb.String()
 }

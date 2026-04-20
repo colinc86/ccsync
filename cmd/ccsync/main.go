@@ -5,24 +5,36 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"github.com/colinc86/ccsync/internal/bootstrap"
+	cryptopkg "github.com/colinc86/ccsync/internal/crypto"
 	"github.com/colinc86/ccsync/internal/doctor"
 	"github.com/colinc86/ccsync/internal/gitx"
+	ignorepkg "github.com/colinc86/ccsync/internal/ignore"
 	"github.com/colinc86/ccsync/internal/profile"
+	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/snapshot"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/tui"
 	"github.com/colinc86/ccsync/internal/updater"
+	watchpkg "github.com/colinc86/ccsync/internal/watch"
 	"github.com/colinc86/ccsync/internal/why"
 )
 
 const version = "0.1.0"
+
+func init() {
+	updater.SetCurrentVersion(version)
+}
 
 func main() {
 	if len(os.Args) > 1 {
@@ -46,6 +58,16 @@ func main() {
 			os.Exit(runUpdate(os.Args[2:]))
 		case "why":
 			os.Exit(runWhy(os.Args[2:]))
+		case "blame":
+			os.Exit(runBlame(os.Args[2:]))
+		case "watch":
+			os.Exit(runWatch(os.Args[2:]))
+		case "encrypt":
+			os.Exit(runEncrypt(os.Args[2:]))
+		case "decrypt":
+			os.Exit(runDecrypt(os.Args[2:]))
+		case "unlock":
+			os.Exit(runUnlock(os.Args[2:]))
 		case "--help", "-h":
 			printHelp()
 			return
@@ -79,6 +101,11 @@ Usage:
   ccsync rollback --commit SHA        revert repo+local to a specific commit
   ccsync doctor                       run integrity checks
   ccsync why <path>                   trace which rules apply to a path
+  ccsync blame <path>                 per-line sync attribution for a repo path
+  ccsync watch [--debounce 10s]       auto-sync on local file changes
+  ccsync encrypt                      enable repo encryption (prompts for passphrase)
+  ccsync decrypt                      disable repo encryption
+  ccsync unlock                       store the passphrase for an encrypted repo
   ccsync update [--check] [--force]   install the latest release in place
   ccsync --version                    print version`)
 }
@@ -410,6 +437,347 @@ func runRollbackCommit(commitSHA string) int {
 		fmt.Fprintf(os.Stderr, "%d file(s) skipped due to missing secrets; run `ccsync` and use RedactionReview\n",
 			len(res.MissingSecrets))
 		return 3
+	}
+	return 0
+}
+
+func runEncrypt(args []string) int {
+	fs := flag.NewFlagSet("encrypt", flag.ExitOnError)
+	passphrase := fs.String("passphrase", "", "encryption passphrase (read from stdin if blank)")
+	fs.Parse(args)
+
+	pp := strings.TrimSpace(*passphrase)
+	if pp == "" {
+		fmt.Fprint(os.Stderr, "passphrase: ")
+		b, err := readPassphrase()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ccsync encrypt:", err)
+			return 1
+		}
+		pp = strings.TrimSpace(string(b))
+	}
+	if pp == "" {
+		fmt.Fprintln(os.Stderr, "ccsync encrypt: passphrase required")
+		return 1
+	}
+
+	ctx, err := tui.NewContext()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	if ctx.State.SyncRepoURL == "" {
+		fmt.Fprintln(os.Stderr, "ccsync: no sync repo configured")
+		return 1
+	}
+	in := buildMigrationInputs(ctx)
+	res, err := sync.EnableEncryption(context.Background(), in, pp)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync encrypt:", err)
+		return 1
+	}
+	if res.CommitSHA != "" {
+		short := res.CommitSHA
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		fmt.Printf("repo encrypted (migration commit %s)\n", short)
+	} else {
+		fmt.Println("repo encrypted")
+	}
+	return 0
+}
+
+// runUnlock accepts the passphrase for an already-encrypted repo, verifies
+// it by decrypting the marker-signed round trip, and stores it in the
+// keychain so subsequent syncs work. The typical path for a second machine
+// after a fresh `ccsync bootstrap` against an encrypted repo.
+func runUnlock(args []string) int {
+	fs := flag.NewFlagSet("unlock", flag.ExitOnError)
+	passphrase := fs.String("passphrase", "", "encryption passphrase (read from stdin if blank)")
+	fs.Parse(args)
+
+	pp := strings.TrimSpace(*passphrase)
+	if pp == "" {
+		fmt.Fprint(os.Stderr, "passphrase: ")
+		b, err := readPassphrase()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ccsync unlock:", err)
+			return 1
+		}
+		pp = strings.TrimSpace(string(b))
+	}
+	if pp == "" {
+		fmt.Fprintln(os.Stderr, "ccsync unlock: passphrase required")
+		return 1
+	}
+
+	ctx, err := tui.NewContext()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	marker, err := cryptopkg.ReadMarker(ctx.RepoPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync unlock:", err)
+		return 1
+	}
+	if marker == nil {
+		fmt.Fprintln(os.Stderr, "ccsync unlock: repo is not encrypted")
+		return 1
+	}
+	key, err := marker.DeriveKey(pp)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync unlock:", err)
+		return 1
+	}
+	// Sanity-check the passphrase by decrypting any encrypted file we can
+	// find. Fail loud if it doesn't match — much better than silently
+	// storing a wrong passphrase and hitting errors later.
+	if err := verifyPassphrase(ctx.RepoPath, key); err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync unlock:", err)
+		return 1
+	}
+	if err := secrets.Store(sync.SecretsKeyPassphrase, pp); err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync unlock: store:", err)
+		return 1
+	}
+	fmt.Println("passphrase stored. next: `ccsync sync`")
+	return 0
+}
+
+// verifyPassphrase walks the repo for any file with the encryption magic
+// and tries to decrypt it. A single successful decrypt proves the key.
+func verifyPassphrase(repoPath string, key []byte) error {
+	var checked int
+	err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		if strings.Contains(path, string(os.PathSeparator)+".git"+string(os.PathSeparator)) {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if !cryptopkg.HasMagic(data) {
+			return nil
+		}
+		if _, derr := cryptopkg.Decrypt(key, data); derr != nil {
+			return fmt.Errorf("wrong passphrase (couldn't decrypt %s)", filepath.Base(path))
+		}
+		checked++
+		return filepath.SkipAll
+	})
+	if err != nil {
+		return err
+	}
+	if checked == 0 {
+		return fmt.Errorf("repo has no encrypted files yet — nothing to verify against")
+	}
+	return nil
+}
+
+func runDecrypt(args []string) int {
+	_ = args
+	ctx, err := tui.NewContext()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	if ctx.State.SyncRepoURL == "" {
+		fmt.Fprintln(os.Stderr, "ccsync: no sync repo configured")
+		return 1
+	}
+	in := buildMigrationInputs(ctx)
+	res, err := sync.DisableEncryption(context.Background(), in)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync decrypt:", err)
+		return 1
+	}
+	if res.CommitSHA != "" {
+		short := res.CommitSHA
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		fmt.Printf("repo decrypted (migration commit %s)\n", short)
+	} else {
+		fmt.Println("repo decrypted")
+	}
+	return 0
+}
+
+// buildMigrationInputs assembles just enough sync.Inputs for the
+// enable/disable migration routines. They don't need Config/Profile since
+// they operate on every file under profiles/ regardless of which profile
+// is active.
+func buildMigrationInputs(ctx *tui.AppContext) sync.Inputs {
+	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
+	return sync.Inputs{
+		RepoPath:    ctx.RepoPath,
+		StateDir:    ctx.StateDir,
+		HostUUID:    ctx.State.HostUUID,
+		HostName:    ctx.HostName,
+		AuthorEmail: ctx.Email,
+		Auth:        auth,
+	}
+}
+
+// readPassphrase reads a secret from stdin. Uses the terminal's no-echo
+// mode when stdin is a TTY; otherwise reads one line so pipes / CI still
+// work (e.g. `echo pw | ccsync encrypt`).
+func readPassphrase() ([]byte, error) {
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr) // newline after the hidden entry
+		return b, err
+	}
+	var buf []byte
+	b := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(b)
+		if n == 1 {
+			if b[0] == '\n' {
+				break
+			}
+			buf = append(buf, b[0])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return buf, nil
+}
+
+func runWatch(args []string) int {
+	fs := flag.NewFlagSet("watch", flag.ExitOnError)
+	debounce := fs.Duration("debounce", 10*time.Second, "quiet period before firing a sync")
+	fs.Parse(args)
+
+	ctx, err := tui.NewContext()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	if ctx.State.SyncRepoURL == "" {
+		fmt.Fprintln(os.Stderr, "ccsync: no sync repo configured")
+		return 1
+	}
+	profile := ctx.State.ActiveProfile
+	if profile == "" {
+		profile = "default"
+	}
+	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
+	syncIn := sync.Inputs{
+		Config:      ctx.Config,
+		Profile:     profile,
+		ClaudeDir:   ctx.ClaudeDir,
+		ClaudeJSON:  ctx.ClaudeJSON,
+		RepoPath:    ctx.RepoPath,
+		StateDir:    ctx.StateDir,
+		HostUUID:    ctx.State.HostUUID,
+		HostName:    ctx.HostName,
+		AuthorEmail: ctx.Email,
+		Auth:        auth,
+	}
+	// Load .syncignore so the watcher doesn't wake on ignored dirs.
+	syncignoreRules := ctx.Config.DefaultSyncignore
+	if data, err := os.ReadFile(filepath.Join(ctx.RepoPath, ".syncignore")); err == nil {
+		syncignoreRules = string(data)
+	}
+	matcher := ignorepkg.New(syncignoreRules)
+
+	runCtx, cancel := signalContext()
+	defer cancel()
+
+	return runWatchLoop(runCtx, watchpkg.Inputs{
+		SyncInputs: syncIn,
+		Debounce:   *debounce,
+		Out:        os.Stdout,
+		Ignore:     matcher,
+	})
+}
+
+// runWatchLoop hands off to the watch package. Broken out so the tests can
+// swap it, and so main.go stays a thin dispatcher.
+func runWatchLoop(ctx context.Context, in watchpkg.Inputs) int {
+	if err := watchpkg.Run(ctx, in); err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync watch:", err)
+		return 1
+	}
+	return 0
+}
+
+// signalContext returns a context that cancels on SIGINT/SIGTERM.
+func signalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt)
+}
+
+func runBlame(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "ccsync blame: provide a repo-relative path, e.g.")
+		fmt.Fprintln(os.Stderr, "  ccsync blame profiles/default/claude/agents/foo.md")
+		fmt.Fprintln(os.Stderr, "  ccsync blame claude/agents/foo.md   # shorthand under active profile")
+		return 1
+	}
+	ctx, err := tui.NewContext()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	if ctx.State.SyncRepoURL == "" {
+		fmt.Fprintln(os.Stderr, "ccsync: no sync repo configured")
+		return 1
+	}
+	target := args[0]
+	// Accept a shorthand: if the user gave a path like claude/agents/foo.md
+	// (which is how they see it everywhere else in the app), prepend the
+	// active profile prefix so the blame lookup hits the right blob.
+	profilePrefix := "profiles/" + ctx.State.ActiveProfile + "/"
+	if !strings.HasPrefix(target, "profiles/") {
+		target = profilePrefix + target
+	}
+
+	repo, err := gitx.Open(ctx.RepoPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	lines, err := repo.Blame(target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync:", err)
+		return 1
+	}
+	if len(lines) == 0 {
+		fmt.Fprintf(os.Stderr, "ccsync blame: no history for %q\n", target)
+		return 1
+	}
+
+	// Figure out max host-name width for alignment.
+	hostWidth := 1
+	for _, l := range lines {
+		if w := len(l.AuthorName); w > hostWidth {
+			hostWidth = w
+		}
+	}
+	if hostWidth > 16 {
+		hostWidth = 16
+	}
+
+	for _, l := range lines {
+		short := l.SHA
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		host := l.AuthorName
+		if len(host) > hostWidth {
+			host = host[:hostWidth]
+		}
+		date := l.When.Local().Format("2006-01-02")
+		text := strings.TrimRight(l.Text, "\n")
+		fmt.Printf("%s  %-*s  %s  %4d│ %s\n", short, hostWidth, host, date, l.LineNo, text)
 	}
 	return 0
 }

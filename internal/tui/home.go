@@ -41,7 +41,7 @@ func (m *homeModel) rebuildChoices() {
 	}
 	m.choices = append(m.choices,
 		homeChoice{
-			label:   "Sync now",
+			label:   "Preview & sync",
 			enabled: bootstrapped,
 			onEnter: func() tea.Cmd { return switchTo(newSyncPreview(m.ctx)) },
 		},
@@ -50,6 +50,15 @@ func (m *homeModel) rebuildChoices() {
 			enabled: bootstrapped,
 			onEnter: func() tea.Cmd { return switchTo(newBrowseTracked(m.ctx)) },
 		},
+	)
+	if n := countSuggestions(m.ctx); n > 0 {
+		m.choices = append(m.choices, homeChoice{
+			label:   fmt.Sprintf("Suggestions (%d)", n),
+			enabled: true,
+			onEnter: func() tea.Cmd { return switchTo(newSuggestions(m.ctx)) },
+		})
+	}
+	m.choices = append(m.choices,
 		homeChoice{
 			label:   "History",
 			enabled: true,
@@ -104,6 +113,13 @@ func (m homeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.choices)-1 {
 				m.cursor++
 			}
+		case "r":
+			// Manual "refresh status" — fires a dry-run against the remote
+			// without waiting for the periodic tick. Shows "◌ checking
+			// remote…" in the status bar for the duration.
+			if m.ctx.State.SyncRepoURL != "" {
+				return m, refreshPlanCmd(m.ctx)
+			}
 		case "enter":
 			c := m.choices[m.cursor]
 			if c.enabled {
@@ -156,7 +172,7 @@ func (m homeModel) View() string {
 		}
 		sb.WriteString(cursor + shortcut + line + "\n")
 	}
-	sb.WriteString("\n" + theme.Hint.Render("↑↓ move • 1-9 jump • enter select"))
+	sb.WriteString("\n" + theme.Hint.Render("↑↓ move • 1-9 jump • enter select • r refresh"))
 
 	return sb.String()
 }

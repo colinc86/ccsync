@@ -312,6 +312,68 @@ func TestProfileExcludeBlocksPushAndPull(t *testing.T) {
 	}
 }
 
+func TestEncryptionRoundTrip(t *testing.T) {
+	secrets.MockInit()
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.LoadDefault()
+
+	// Machine A — bootstrap + first sync (plaintext).
+	homeA := filepath.Join(tmp, "homeA")
+	repoA := filepath.Join(tmp, "repoA")
+	stateA := filepath.Join(tmp, "stateA")
+	seedMachine(t, homeA)
+	if _, err := gitx.Init(repoA, bareDir); err != nil {
+		t.Fatal(err)
+	}
+	inA := machineInputs(homeA, repoA, stateA, cfg)
+	if _, err := Run(context.Background(), inA, nil); err != nil {
+		t.Fatalf("A first sync: %v", err)
+	}
+
+	// Enable encryption.
+	if _, err := EnableEncryption(context.Background(), inA, "hunter2"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	// Inspect the bare repo: agent file bytes must not contain the original plaintext.
+	inspect := filepath.Join(tmp, "inspect")
+	if _, err := gogit.PlainClone(inspect, false, &gogit.CloneOptions{URL: bareDir}); err != nil {
+		t.Fatal(err)
+	}
+	ct, err := os.ReadFile(filepath.Join(inspect, "profiles/default/claude/agents/foo.md"))
+	if err != nil {
+		t.Fatalf("read agent file: %v", err)
+	}
+	if strings.Contains(string(ct), "agent body") {
+		t.Errorf("plaintext leaked into encrypted repo:\n%s", ct)
+	}
+
+	// Second sync should still work — round-trip through encryption.
+	if _, err := Run(context.Background(), inA, nil); err != nil {
+		t.Fatalf("A sync after enable: %v", err)
+	}
+
+	// Decrypt: repo bytes should be plaintext again.
+	if _, err := DisableEncryption(context.Background(), inA); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	inspect2 := filepath.Join(tmp, "inspect2")
+	if _, err := gogit.PlainClone(inspect2, false, &gogit.CloneOptions{URL: bareDir}); err != nil {
+		t.Fatal(err)
+	}
+	pt, err := os.ReadFile(filepath.Join(inspect2, "profiles/default/claude/agents/foo.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pt), "agent body") {
+		t.Errorf("expected plaintext after decrypt; got:\n%s", pt)
+	}
+}
+
 func TestDryRunReturnsPlanWithoutWrites(t *testing.T) {
 	secrets.MockInit()
 	tmp := t.TempDir()

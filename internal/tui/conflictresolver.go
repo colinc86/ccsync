@@ -120,6 +120,11 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.applying = true
 				return m, runApplyResolutions(m.ctx, m.conflicts, m.choices, m.override)
 			}
+		case "d":
+			if len(m.conflicts) > 0 {
+				fc := m.conflicts[m.cursor]
+				return m, switchTo(newDiffView(fc.Path, fc.LocalData, fc.RemoteData))
+			}
 		}
 	}
 	return m, nil
@@ -213,6 +218,6 @@ func (m *conflictResolverModel) View() string {
 	if m.allResolved() {
 		sb.WriteString(theme.Primary.Render("a ") + "apply all • ")
 	}
-	sb.WriteString(theme.Hint.Render("l local • r remote • enter per-key (JSON) • ↑↓ move"))
+	sb.WriteString(theme.Hint.Render("l local • r remote • enter per-key (JSON) • d diff • ↑↓ move"))
 	return sb.String()
 }

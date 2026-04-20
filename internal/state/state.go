@@ -66,6 +66,11 @@ type State struct {
 	// human-readable. Empty == no periodic refresh; startup and on-demand
 	// refreshes still happen.
 	FetchInterval string `json:"fetchInterval,omitempty"`
+
+	// DismissedSuggestions records rule patterns the user has rejected from
+	// the Suggestions screen. The suggester filters these out so nothing
+	// gets re-proposed after dismissal.
+	DismissedSuggestions []string `json:"dismissedSuggestions,omitempty"`
 }
 
 // FetchIntervalDuration returns the parsed fetch interval, or zero when the

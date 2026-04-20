@@ -329,3 +329,49 @@ type LogEntry struct {
 
 // storerStop is a sentinel used to break out of iter.ForEach early.
 var storerStop = errors.New("gitx: stop iteration")
+
+// BlameLine is one line of a path's blame output: text, plus the commit and
+// author that last touched it.
+type BlameLine struct {
+	LineNo     int
+	Text       string
+	SHA        string
+	AuthorName string
+	AuthorMail string
+	When       time.Time
+}
+
+// Blame returns per-line authorship for path at HEAD. Missing paths / empty
+// repos return (nil, nil) so callers can distinguish "no info" from error.
+func (r *Repo) Blame(path string) ([]BlameLine, error) {
+	ref, err := r.repo.Head()
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil, nil
+		}
+		return nil, Translate(err)
+	}
+	commit, err := r.repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil, Translate(err)
+	}
+	res, err := git.Blame(commit, path)
+	if err != nil {
+		if errors.Is(err, object.ErrFileNotFound) {
+			return nil, nil
+		}
+		return nil, Translate(err)
+	}
+	out := make([]BlameLine, 0, len(res.Lines))
+	for i, line := range res.Lines {
+		out = append(out, BlameLine{
+			LineNo:     i + 1,
+			Text:       line.Text,
+			SHA:        line.Hash.String(),
+			AuthorName: line.AuthorName,
+			AuthorMail: line.Author,
+			When:       line.Date,
+		})
+	}
+	return out, nil
+}

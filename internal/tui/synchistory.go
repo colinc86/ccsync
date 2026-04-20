@@ -42,8 +42,9 @@ type syncHistoryModel struct {
 	err      error
 	message  string
 
-	filtering bool
-	filterIn  textinput.Model
+	filtering    bool
+	filterIn     textinput.Model
+	calendarView bool // when true, render the activity calendar instead of the list
 }
 
 func newSyncHistory(ctx *AppContext) *syncHistoryModel {
@@ -148,6 +149,9 @@ func (m *syncHistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filterIn.SetValue("")
 			m.applyFilter()
 			return m, nil
+		case "v":
+			m.calendarView = !m.calendarView
+			return m, nil
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -212,6 +216,15 @@ func (m *syncHistoryModel) View() string {
 	if m.message != "" {
 		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
 	}
+	if m.calendarView {
+		var logs []gitx.LogEntry
+		if repo, err := gitx.Open(m.ctx.RepoPath); err == nil {
+			logs, _ = repo.Log(500) // enough to cover the 26-week window
+		}
+		sb.WriteString(renderActivityCalendar(logs))
+		sb.WriteString("\n\n" + theme.Hint.Render("v list view • esc back"))
+		return sb.String()
+	}
 	if m.filtering || m.filterIn.Value() != "" {
 		sb.WriteString(theme.Secondary.Render("filter: ") + m.filterIn.View())
 		sb.WriteString(fmt.Sprintf("  %s\n\n",
@@ -253,6 +266,7 @@ func (m *syncHistoryModel) View() string {
 	sb.WriteString("\n" +
 		theme.Primary.Render("/ ") + "filter • " +
 		theme.Primary.Render("b ") + "rollback • " +
+		theme.Primary.Render("v ") + "calendar • " +
 		theme.Hint.Render("↑↓ move • c clear"))
 	return sb.String()
 }

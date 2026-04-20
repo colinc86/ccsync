@@ -20,6 +20,24 @@ const (
 	repoName  = "ccsync"
 )
 
+// CurrentVersion is set by main() at startup via SetCurrentVersion. Other
+// packages (notably the TUI's Settings screen) read it to display the
+// running version without importing main.
+var currentVersion string
+
+// SetCurrentVersion records the binary's version string. Called once from
+// main.go so the TUI can present it consistently with `ccsync --version`.
+func SetCurrentVersion(v string) { currentVersion = v }
+
+// CurrentVersion returns whatever was last passed to SetCurrentVersion, or
+// "dev" if main never called it (e.g. in tests).
+func CurrentVersion() string {
+	if currentVersion == "" {
+		return "dev"
+	}
+	return currentVersion
+}
+
 type release struct {
 	TagName string `json:"tag_name"`
 }
