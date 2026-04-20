@@ -38,6 +38,7 @@ type browseTrackedModel struct {
 	// syncignore flow — triggered by `i` on a highlighted row.
 	ignoring     ignoreStage
 	ignoreTarget string // the path the user chose to act on
+	ignoreChoice int    // cursor in the choose-menu
 	patIn        textinput.Model
 }
 
@@ -215,6 +216,9 @@ func (m *browseTrackedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.ignoring = ignoreChoose
 			m.ignoreTarget = m.entries[m.filtered[m.cursor]].RelPath
+			// Default cursor to "this exact path"; first option is always
+			// available regardless of target depth.
+			m.ignoreChoice = 0
 			m.err = nil
 			return m, nil
 		case "?":
@@ -301,7 +305,52 @@ func (m *browseTrackedModel) toggleCursor() tea.Cmd {
 	return loadBrowseEntries(m.ctx)
 }
 
-// updateIgnore drives the "add a rule to .syncignore" flow: a small menu
+// ignoreOption describes one row in the ignore-choose picker. Disabled
+// options are rendered but skipped when the cursor moves over them.
+type ignoreOption struct {
+	label   string // short label shown to the left of the arrow
+	preview string // the pattern that would be written
+	hint    string // optional extra hint text (e.g. "disabled…")
+	run     func(m *browseTrackedModel) tea.Cmd
+	enabled bool
+}
+
+// ignoreOptions builds the menu for the current ignoreTarget. Keep this in
+// sync with renderIgnoreFlow and updateIgnore; both iterate the same slice.
+func (m *browseTrackedModel) ignoreOptions() []ignoreOption {
+	pathPat := syncignoreRel(m.ignoreTarget)
+	parentPat := parentSyncignorePattern(m.ignoreTarget)
+	extPat := defaultExtensionPattern(m.ignoreTarget)
+	opts := []ignoreOption{
+		{
+			label: "this exact path", preview: pathPat, enabled: true,
+			run: func(m *browseTrackedModel) tea.Cmd { return m.applyIgnore(pathPat) },
+		},
+	}
+	if parentPat != "" {
+		opts = append(opts, ignoreOption{
+			label: "parent directory", preview: parentPat, enabled: true,
+			run: func(m *browseTrackedModel) tea.Cmd { return m.applyIgnore(parentPat) },
+		})
+	} else {
+		opts = append(opts, ignoreOption{
+			label: "parent directory", hint: "(top-level file has no parent)",
+		})
+	}
+	opts = append(opts, ignoreOption{
+		label: "pattern…", preview: "starts at " + extPat, enabled: true,
+		run: func(m *browseTrackedModel) tea.Cmd {
+			m.ignoring = ignorePattern
+			m.patIn.SetValue(extPat)
+			m.patIn.CursorEnd()
+			m.patIn.Focus()
+			return textinput.Blink
+		},
+	})
+	return opts
+}
+
+// updateIgnore drives the "add a rule to .syncignore" flow: a small picker
 // (path / parent-dir / pattern) followed by an optional pattern edit.
 func (m *browseTrackedModel) updateIgnore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.ignoring == ignorePattern {
@@ -323,29 +372,58 @@ func (m *browseTrackedModel) updateIgnore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// ignoreChoose
+	opts := m.ignoreOptions()
 	switch msg.String() {
 	case "esc":
 		m.ignoring = ignoreOff
 		m.ignoreTarget = ""
 		return m, nil
-	case "1", "f":
-		return m, m.applyIgnore(syncignoreRel(m.ignoreTarget))
-	case "2", "d":
-		parent := parentSyncignorePattern(m.ignoreTarget)
-		if parent == "" {
-			m.err = fmt.Errorf("no parent directory to ignore")
+	case "up", "k":
+		m.ignoreChoice = prevEnabled(opts, m.ignoreChoice)
+		return m, nil
+	case "down", "j":
+		m.ignoreChoice = nextEnabled(opts, m.ignoreChoice)
+		return m, nil
+	case "enter":
+		if m.ignoreChoice < 0 || m.ignoreChoice >= len(opts) {
 			return m, nil
 		}
-		return m, m.applyIgnore(parent)
-	case "3", "p":
-		m.ignoring = ignorePattern
-		m.patIn.SetValue(defaultExtensionPattern(m.ignoreTarget))
-		m.patIn.CursorEnd()
-		m.patIn.Focus()
-		return m, textinput.Blink
+		opt := opts[m.ignoreChoice]
+		if !opt.enabled || opt.run == nil {
+			return m, nil
+		}
+		return m, opt.run(m)
+	}
+	// Number shortcuts still work for muscle memory.
+	if len(msg.String()) == 1 {
+		c := msg.String()[0]
+		if c >= '1' && c <= '9' {
+			idx := int(c - '1')
+			if idx >= 0 && idx < len(opts) && opts[idx].enabled && opts[idx].run != nil {
+				m.ignoreChoice = idx
+				return m, opts[idx].run(m)
+			}
+		}
 	}
 	return m, nil
+}
+
+func nextEnabled(opts []ignoreOption, cur int) int {
+	for i := cur + 1; i < len(opts); i++ {
+		if opts[i].enabled {
+			return i
+		}
+	}
+	return cur
+}
+
+func prevEnabled(opts []ignoreOption, cur int) int {
+	for i := cur - 1; i >= 0; i-- {
+		if opts[i].enabled {
+			return i
+		}
+	}
+	return cur
 }
 
 // applyIgnore appends pattern to .syncignore, exits the flow, and reloads
@@ -503,24 +581,33 @@ func (m *browseTrackedModel) View() string {
 }
 
 // renderIgnoreFlow returns the UI for the per-row "add to .syncignore"
-// action: a 3-option picker, plus an optional textinput for the pattern.
+// action: a cursor-driven picker, plus an optional textinput for the
+// pattern branch.
 func (m *browseTrackedModel) renderIgnoreFlow() string {
 	var sb strings.Builder
 	sb.WriteString(theme.Heading.Render("add to .syncignore") + "\n\n")
 	fmt.Fprintf(&sb, "  %s  %s\n\n", theme.Secondary.Render("target:"), m.ignoreTarget)
 
-	pathPat := syncignoreRel(m.ignoreTarget)
-	parentPat := parentSyncignorePattern(m.ignoreTarget)
-	if parentPat == "" {
-		parentPat = theme.Hint.Render("(no parent directory)")
-	}
-	extPat := defaultExtensionPattern(m.ignoreTarget)
-
 	if m.ignoring == ignoreChoose {
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Primary.Render("1"), "this exact path   "+theme.Hint.Render("→ "+pathPat))
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Primary.Render("2"), "parent directory  "+theme.Hint.Render("→ "+parentPat))
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Primary.Render("3"), "pattern…          "+theme.Hint.Render("starts at "+extPat))
-		sb.WriteString("\n" + theme.Hint.Render("1/2/3 choose • esc cancel"))
+		for i, opt := range m.ignoreOptions() {
+			cursor := "  "
+			if i == m.ignoreChoice {
+				cursor = theme.Primary.Render("▸ ")
+			}
+			label := opt.label
+			detail := ""
+			switch {
+			case opt.hint != "":
+				detail = theme.Hint.Render(opt.hint)
+			case opt.preview != "":
+				detail = theme.Hint.Render("→ " + opt.preview)
+			}
+			if !opt.enabled {
+				label = theme.Hint.Render(label)
+			}
+			fmt.Fprintf(&sb, "%s%s  %-20s  %s\n", cursor, theme.Hint.Render(fmt.Sprintf("%d", i+1)), label, detail)
+		}
+		sb.WriteString("\n" + theme.Hint.Render("↑↓ move • enter select • 1-3 jump • esc cancel"))
 		return sb.String()
 	}
 

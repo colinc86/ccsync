@@ -198,6 +198,22 @@ func (m *settingsModel) buildRows() {
 			},
 		},
 		{
+			label: "background fetch", kind: kindRadio,
+			options: []string{"none", "1h", "24h"},
+			value:   func() string { return fetchIntervalLabel(ctx.State.FetchInterval) },
+			cycle: func() error {
+				switch ctx.State.FetchInterval {
+				case "":
+					ctx.State.FetchInterval = "1h"
+				case "1h":
+					ctx.State.FetchInterval = "24h"
+				default:
+					ctx.State.FetchInterval = ""
+				}
+				return state.Save(ctx.StateDir, ctx.State)
+			},
+		},
+		{
 			label: "snapshot: keep count", kind: kindInt,
 			value: func() string {
 				c, _ := ctx.State.SnapshotRetention()
@@ -333,6 +349,18 @@ func boolLabel(b bool) string {
 		return theme.Good.Render("on")
 	}
 	return "off"
+}
+
+func fetchIntervalLabel(s string) string {
+	switch s {
+	case "":
+		return "none"
+	case "1h":
+		return "every 1h"
+	case "24h":
+		return "every 24h"
+	}
+	return s
 }
 
 // rowKindGlyph returns a small leading icon so users can tell what a row
@@ -475,6 +503,14 @@ func (m *settingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.err = err
 				} else {
 					m.message = "updated: " + row.label
+					// Changing the background-fetch interval should feel
+					// immediate — bump the generation so any in-flight tick
+					// from the previous cadence is dropped, then fire a
+					// refresh and schedule a fresh tick.
+					if row.label == "background fetch" {
+						m.ctx.TickGen++
+						return m, tea.Batch(refreshPlanCmd(m.ctx), schedulePeriodicRefresh(m.ctx))
+					}
 				}
 			case kindBool:
 				if err := row.toggle(); err != nil {

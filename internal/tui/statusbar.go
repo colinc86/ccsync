@@ -36,13 +36,8 @@ func statusBar(ctx *AppContext) string {
 	if ctx.State.SyncRepoURL == "" {
 		parts = append(parts, theme.Warn.Render("no repo"))
 	} else {
-		switch Freshness(ctx) {
-		case FreshnessUpToDate:
-			parts = append(parts, theme.Good.Render("✓ in sync"))
-		case FreshnessUnsynced:
-			parts = append(parts, theme.Warn.Render("⟲ unsynced"))
-		case FreshnessNever:
-			parts = append(parts, theme.Hint.Render("never synced"))
+		if badge := SummaryBadge(ctx.Summary(), true); badge != "" {
+			parts = append(parts, badge)
 		}
 	}
 

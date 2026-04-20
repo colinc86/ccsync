@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -109,6 +110,13 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.err = msg.err
 		m.plan = msg.plan
+		// This screen already paid for a dry-run; cache it so the status bar
+		// and Home dashboard use the same plan without a second network hit.
+		if m.err == nil {
+			m.ctx.Plan = &msg.plan
+			m.ctx.PlanTime = time.Now()
+			m.ctx.PlanErr = nil
+		}
 		// Auto-apply on clean syncs, when the user opted in.
 		if m.err == nil && m.ctx.State.AutoApplyClean && m.planIsClean() {
 			return m, switchTo(newSync(m.ctx))
@@ -137,21 +145,8 @@ func (m *syncPreviewModel) View() string {
 		return theme.Bad.Render("error: ") + m.err.Error()
 	}
 
-	added, modified, deleted := m.plan.Summary()
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s   %s   %s\n",
-		theme.Good.Render(fmt.Sprintf("+%d added", added)),
-		theme.Warn.Render(fmt.Sprintf("~%d modified", modified)),
-		theme.Bad.Render(fmt.Sprintf("-%d deleted", deleted)),
-	))
-	sb.WriteString("\n")
-
-	if len(m.plan.Actions) == 0 {
-		sb.WriteString(theme.Good.Render("in sync — nothing to do"))
-		return sb.String()
-	}
-
-	shown := 0
+	var push, pull []sync.FileAction
 	excluded := 0
 	for _, a := range m.plan.Actions {
 		if a.ExcludedByProfile {
@@ -161,27 +156,67 @@ func (m *syncPreviewModel) View() string {
 		if a.Action == manifest.ActionNoOp {
 			continue
 		}
-		shown++
-		sb.WriteString(fmt.Sprintf("  %s %s\n", actionGlyph(a.Action), a.Path))
-		if shown >= 30 {
-			sb.WriteString(theme.Hint.Render(fmt.Sprintf("  … %d more\n", len(m.plan.Actions)-shown)))
-			break
+		if isPushAction(a.Action) {
+			push = append(push, a)
+		} else if isPullAction(a.Action) {
+			pull = append(pull, a)
+		}
+		if a.Action == manifest.ActionMerge {
+			// Merge acts on both sides; list it in both buckets so the user
+			// sees it wherever they're looking. Dedup is cheap — the path is
+			// displayed, not counted twice in the summary header.
+			pull = append(pull, a)
 		}
 	}
 
+	fmt.Fprintf(&sb, "%s   %s   %s\n",
+		theme.Warn.Render(fmt.Sprintf("↑ %d push", len(push))),
+		theme.Warn.Render(fmt.Sprintf("↓ %d pull", len(pull))),
+		theme.Bad.Render(fmt.Sprintf("! %d conflict", len(m.plan.Conflicts))),
+	)
+	sb.WriteString("\n")
+
+	if len(push)+len(pull)+len(m.plan.Conflicts) == 0 {
+		sb.WriteString(theme.Good.Render("in sync — nothing to do"))
+		if excluded > 0 {
+			sb.WriteString("\n" + theme.Hint.Render(
+				fmt.Sprintf("(%d path(s) excluded by profile %q — run `ccsync why <path>`)",
+					excluded, m.ctx.State.ActiveProfile)))
+		}
+		return sb.String()
+	}
+
+	writeGroup := func(label string, actions []sync.FileAction) {
+		if len(actions) == 0 {
+			return
+		}
+		sb.WriteString(theme.Secondary.Render(label) + "\n")
+		for i, a := range actions {
+			if i >= 30 {
+				fmt.Fprintf(&sb, theme.Hint.Render("  … %d more\n"), len(actions)-i)
+				break
+			}
+			fmt.Fprintf(&sb, "  %s %s\n", actionGlyph(a.Action), a.Path)
+		}
+		sb.WriteString("\n")
+	}
+	writeGroup(fmt.Sprintf("↑ push (%d)", len(push)), push)
+	writeGroup(fmt.Sprintf("↓ pull (%d)", len(pull)), pull)
+
 	if len(m.plan.Conflicts) > 0 {
-		sb.WriteString("\n" + theme.Bad.Render(fmt.Sprintf("%d conflict(s) — will be skipped:", len(m.plan.Conflicts))) + "\n")
+		fmt.Fprintf(&sb, theme.Bad.Render("! conflicts (%d) — will be skipped:\n"), len(m.plan.Conflicts))
 		for i, c := range m.plan.Conflicts {
 			if i >= 5 {
-				sb.WriteString(theme.Hint.Render(fmt.Sprintf("  … %d more\n", len(m.plan.Conflicts)-i)))
+				fmt.Fprintf(&sb, theme.Hint.Render("  … %d more\n"), len(m.plan.Conflicts)-i)
 				break
 			}
 			sb.WriteString("  ! " + c.Path + "\n")
 		}
+		sb.WriteString("\n")
 	}
 
 	if excluded > 0 {
-		sb.WriteString("\n" + theme.Hint.Render(
+		sb.WriteString(theme.Hint.Render(
 			fmt.Sprintf("%d path(s) excluded by profile %q — run `ccsync why <path>` to see which rule",
 				excluded, m.ctx.State.ActiveProfile)) + "\n")
 	}
@@ -197,6 +232,24 @@ func (m *syncPreviewModel) View() string {
 // conflicts. An empty plan (nothing to do) is also "clean" — no-op apply.
 func (m *syncPreviewModel) planIsClean() bool {
 	return len(m.plan.Conflicts) == 0
+}
+
+// isPushAction reports whether this action moves data repo-ward.
+func isPushAction(a manifest.Action) bool {
+	switch a {
+	case manifest.ActionAddRemote, manifest.ActionPush, manifest.ActionDeleteRemote:
+		return true
+	}
+	return false
+}
+
+// isPullAction reports whether this action moves data local-ward.
+func isPullAction(a manifest.Action) bool {
+	switch a {
+	case manifest.ActionAddLocal, manifest.ActionPull, manifest.ActionDeleteLocal:
+		return true
+	}
+	return false
 }
 
 func actionGlyph(a manifest.Action) string {

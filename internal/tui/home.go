@@ -138,7 +138,7 @@ func (m homeModel) View() string {
 			fmt.Fprintf(&sb, "   %s", theme.Hint.Render(fmt.Sprintf("· %d snapshot(s)", n)))
 		}
 		sb.WriteString("\n")
-		fmt.Fprintf(&sb, "status:  %s\n", FreshnessBadge(Freshness(m.ctx)))
+		fmt.Fprintf(&sb, "status:  %s\n", SummaryBadge(m.ctx.Summary(), false))
 	} else {
 		sb.WriteString(theme.Warn.Render("no sync repo configured — run: ccsync bootstrap --repo <URL>") + "\n")
 	}

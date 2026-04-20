@@ -194,7 +194,11 @@ func (m *syncHistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.message = "already matches target"
 			}
 			m.err = nil
+			// Rollback writes a new commit and updates LastSyncedSHA on disk;
+			// refresh so the status bar's freshness check sees it.
+			m.ctx.RefreshState()
 			m.reload()
+			return m, refreshPlanCmd(m.ctx)
 		}
 	}
 	return m, nil

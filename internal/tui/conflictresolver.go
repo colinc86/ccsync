@@ -73,7 +73,11 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r := msg.result
 			m.result = &r
 		}
-		return m, nil
+		// ApplyResolutions commits and advances LastSyncedSHA on disk —
+		// pull the change into the TUI's state so the status bar refreshes,
+		// and recompute the plan so the next frame reflects the new counts.
+		m.ctx.RefreshState()
+		return m, refreshPlanCmd(m.ctx)
 	case perKeyResolvedMsg:
 		m.override[msg.fileIdx] = msg.bytes
 		m.choices[msg.fileIdx] = choicePerKey

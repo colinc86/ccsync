@@ -103,7 +103,11 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r := msg.res
 			m.result = &r
 		}
-		return m, nil
+		// sync.Run advances LastSyncedSHA on disk; pull that back into the
+		// TUI's in-memory copy so Home + status bar reflect the new state,
+		// and recompute the cached plan so push/pull counts are fresh.
+		m.ctx.RefreshState()
+		return m, refreshPlanCmd(m.ctx)
 	case tea.KeyMsg:
 		if !m.done {
 			return m, nil

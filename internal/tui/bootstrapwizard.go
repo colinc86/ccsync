@@ -87,8 +87,10 @@ func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.done = msg.st
 		m.step = stepDone
 		if m.done != nil {
-			// refresh context state so Home shows bootstrapped status
+			// refresh context state so Home shows bootstrapped status, and
+			// kick off the first plan fetch now that we have a repo.
 			m.ctx.State = m.done
+			return m, refreshPlanCmd(m.ctx)
 		}
 		return m, nil
 

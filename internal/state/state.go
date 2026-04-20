@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // AuthKind discriminates how ccsync authenticates with the sync remote.
@@ -58,6 +59,35 @@ type State struct {
 	// AutoApplyClean, when true, skips the "press enter to apply" step on
 	// syncs that have no conflicts and no redaction gaps. Default false.
 	AutoApplyClean bool `json:"autoApplyClean,omitempty"`
+
+	// FetchInterval controls how often the TUI re-runs a background dry-run
+	// to refresh the push/pull status badge. Parsed via ParseFetchInterval;
+	// stored as a short string ("", "1h", "24h") so the state file stays
+	// human-readable. Empty == no periodic refresh; startup and on-demand
+	// refreshes still happen.
+	FetchInterval string `json:"fetchInterval,omitempty"`
+}
+
+// FetchIntervalDuration returns the parsed fetch interval, or zero when the
+// user has opted out of periodic fetches.
+func (s *State) FetchIntervalDuration() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return ParseFetchInterval(s.FetchInterval)
+}
+
+// ParseFetchInterval accepts "", "1h", "24h" — or any Go duration string the
+// user has put in state.json by hand. Unparseable strings yield 0 ("off").
+func ParseFetchInterval(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 // SnapshotRetention returns (maxCount, maxAge) with defaults applied.

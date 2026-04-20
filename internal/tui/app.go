@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -14,6 +15,7 @@ import (
 	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
+	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
 )
 
@@ -27,12 +29,38 @@ type AppContext struct {
 	ClaudeJSON string
 	HostName   string
 	Email      string
+
+	// Plan / PlanTime / PlanErr / Fetching cache the result of the most
+	// recent background dry-run. Summary() reads from here. Writes happen
+	// in AppModel.Update on planRefreshDoneMsg; never touch from inside a
+	// screen's Update (the app is the single writer).
+	Plan     *sync.Plan
+	PlanTime time.Time
+	PlanErr  error
+	Fetching bool
+
+	// TickGen invalidates stale periodic-refresh ticks. When the user
+	// changes the fetch interval we bump this counter, so any in-flight
+	// tea.Tick scheduled under the old interval is ignored when it fires
+	// (its embedded gen won't match). Prevents duplicate tickers after
+	// repeated setting changes.
+	TickGen int
 }
 
 // ConfigPath returns the on-disk ccsync.yaml path. Before bootstrap, an
 // in-repo path that doesn't exist yet — callers should check for existence.
 func (c *AppContext) ConfigPath() string {
 	return filepath.Join(c.RepoPath, "ccsync.yaml")
+}
+
+// RefreshState re-reads ~/.ccsync/state.json and replaces c.State. Call this
+// after any subprocess (sync.Run, sync.RollbackTo) that mutates state on
+// disk behind the TUI's back — otherwise c.State.LastSyncedSHA goes stale
+// and the Home dashboard / status bar keep reporting the old freshness.
+func (c *AppContext) RefreshState() {
+	if st, err := state.Load(c.StateDir); err == nil {
+		c.State = st
+	}
 }
 
 // NewContext resolves paths and loads config + state from disk. Fresh
@@ -118,12 +146,24 @@ func New(ctx *AppContext) AppModel {
 	}
 }
 
-// Init satisfies tea.Model.
+// Init satisfies tea.Model. Kicks off the first status refresh and, if the
+// user has opted into a periodic refresh, schedules the next tick.
 func (m AppModel) Init() tea.Cmd {
-	if len(m.screens) == 0 {
-		return nil
+	cmds := []tea.Cmd{refreshPlanCmd(m.ctx), schedulePeriodicRefresh(m.ctx)}
+	if len(m.screens) > 0 {
+		cmds = append(cmds, m.screens[0].Init())
 	}
-	return m.screens[0].Init()
+	return tea.Batch(nonNilCmds(cmds)...)
+}
+
+func nonNilCmds(cmds []tea.Cmd) []tea.Cmd {
+	out := cmds[:0]
+	for _, c := range cmds {
+		if c != nil {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Update routes messages: global keys are handled here, everything else is
@@ -164,6 +204,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screens = m.screens[:len(m.screens)-1]
 		}
 		return m, nil
+
+	case planRefreshStartedMsg:
+		m.ctx.Fetching = true
+		return m, nil
+	case planRefreshDoneMsg:
+		m.ctx.Fetching = false
+		m.ctx.Plan = msg.plan
+		m.ctx.PlanErr = msg.err
+		m.ctx.PlanTime = msg.at
+		return m, nil
+	case periodicRefreshTickMsg:
+		// Drop ticks from a superseded interval — the user changed the
+		// fetch-interval setting and bumped TickGen, so this tick belongs
+		// to a schedule that no longer exists.
+		if msg.gen != m.ctx.TickGen {
+			return m, nil
+		}
+		return m, tea.Batch(refreshPlanCmd(m.ctx), schedulePeriodicRefresh(m.ctx))
 	}
 
 	top := m.screens[len(m.screens)-1]
@@ -185,9 +243,19 @@ func (m AppModel) View() string {
 	top := m.screens[len(m.screens)-1]
 	header := renderBreadcrumbs(m.screens)
 	status := statusBar(m.ctx)
-	footer := theme.Hint.Render("esc back/quit • ctrl+c quit")
+	footer := theme.Hint.Render(navigationHint(m.screens))
 	body := top.View()
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", status, footer)
+}
+
+// navigationHint picks the right one-liner for the current stack. On Home
+// esc is the only "quit" path (ctrl+c is universal and not worth mentioning);
+// deeper in the stack, esc pops back one screen.
+func navigationHint(screens []screen) string {
+	if len(screens) <= 1 {
+		return "esc quit"
+	}
+	return "esc back"
 }
 
 // renderBreadcrumbs returns the header line: each screen's title separated
