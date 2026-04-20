@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# ccsync installer — downloads the latest release binary from GitHub.
-# Usage: curl -fsSL https://raw.githubusercontent.com/colinc86/ccsync/main/scripts/install.sh | bash
+# ccsync installer — downloads a release binary from GitHub.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/colinc86/ccsync/main/scripts/install.sh | bash
+#
+# Environment:
+#   VERSION   pin a specific release tag (e.g. VERSION=v0.2.0); defaults to latest
+#   PREFIX    install prefix; binary goes under $PREFIX/bin (default: ~/.local)
 set -euo pipefail
 
 REPO="colinc86/ccsync"
@@ -31,11 +37,12 @@ latest_tag() {
 
 main() {
   local tag os_name arch_name asset url tmp
-  tag="$(latest_tag)"
+  tag="${VERSION:-$(latest_tag)}"
   if [[ -z "$tag" ]]; then
     echo "couldn't resolve latest release tag" >&2
     exit 1
   fi
+  [[ "$tag" == v* ]] || tag="v$tag"
   os_name="$(os)"
   arch_name="$(arch)"
   asset="${BINARY}_${tag#v}_${os_name}_${arch_name}.tar.gz"

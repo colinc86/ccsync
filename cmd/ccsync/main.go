@@ -18,6 +18,7 @@ import (
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/tui"
+	"github.com/colinc86/ccsync/internal/updater"
 )
 
 const version = "0.1.0"
@@ -40,6 +41,8 @@ func main() {
 			os.Exit(runSnapshot(os.Args[2:]))
 		case "rollback":
 			os.Exit(runRollback(os.Args[2:]))
+		case "update":
+			os.Exit(runUpdate(os.Args[2:]))
 		case "--help", "-h":
 			printHelp()
 			return
@@ -72,6 +75,7 @@ Usage:
   ccsync rollback                     restore local files from latest snapshot
   ccsync rollback --commit SHA        revert repo+local to a specific commit
   ccsync doctor                       run integrity checks
+  ccsync update [--check] [--force]   install the latest release in place
   ccsync --version                    print version`)
 }
 
@@ -403,6 +407,52 @@ func runRollbackCommit(commitSHA string) int {
 			len(res.MissingSecrets))
 		return 3
 	}
+	return 0
+}
+
+func runUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "print whether an update is available and exit")
+	force := fs.Bool("force", false, "reinstall even if the current version matches latest")
+	fs.Parse(args)
+
+	tag, err := updater.LatestTag()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync update:", err)
+		return 1
+	}
+	current := "v" + version
+	if tag == current && !*force {
+		fmt.Printf("ccsync is up to date (%s)\n", current)
+		return 0
+	}
+	if *check {
+		fmt.Printf("update available: %s → %s\n", current, tag)
+		return 0
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync update:", err)
+		return 1
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+
+	if updater.IsHomebrew(exe) {
+		fmt.Println("ccsync was installed via Homebrew. run: brew upgrade ccsync")
+		return 0
+	}
+
+	fmt.Printf("installing %s → %s ...\n", current, tag)
+	if err := updater.InstallRelease(tag, exe); err != nil {
+		fmt.Fprintln(os.Stderr, "ccsync update:", err)
+		fmt.Fprintln(os.Stderr, "hint: if ccsync lives in a system dir you can't write, reinstall with:")
+		fmt.Fprintln(os.Stderr, "  curl -fsSL https://raw.githubusercontent.com/colinc86/ccsync/main/scripts/install.sh | bash")
+		return 1
+	}
+	fmt.Printf("updated: %s → %s\n", current, tag)
 	return 0
 }
 
