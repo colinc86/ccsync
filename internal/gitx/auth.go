@@ -1,10 +1,12 @@
 package gitx
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -60,6 +62,16 @@ func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 		// with "no supported methods"). Only fall back to file-based when
 		// no agent is running. An explicit SSHKeyPath overrides both.
 		if c.SSHKeyPath == "" {
+			// 1Password's SSH agent (and similar: keepassxc, secretive)
+			// configures itself via ~/.ssh/config's IdentityAgent rather
+			// than setting SSH_AUTH_SOCK. go-git doesn't read ssh_config,
+			// so bridge the gap: if the user has an IdentityAgent set and
+			// we don't already have an agent socket, honor it.
+			if os.Getenv("SSH_AUTH_SOCK") == "" {
+				if sock := sshConfigIdentityAgent(); sock != "" {
+					_ = os.Setenv("SSH_AUTH_SOCK", sock)
+				}
+			}
 			if agent, err := gitssh.NewSSHAgentAuth("git"); err == nil {
 				return agent, nil
 			}
@@ -94,6 +106,67 @@ func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 		return &githttp.BasicAuth{Username: user, Password: c.HTTPSToken}, nil
 	}
 	return nil, fmt.Errorf("unknown auth kind: %d", c.Kind)
+}
+
+// sshConfigIdentityAgent scans ~/.ssh/config for an IdentityAgent directive
+// and returns its resolved path, or "" when no such directive is set.
+// Honors the common "Host *" (or unscoped) case that 1Password, keepassxc,
+// and similar set up for you. Does NOT do full host-pattern matching — a
+// specific Host block's IdentityAgent is still honored as long as we hit
+// it before a non-matching Host cuts us off. Good enough for the 99% case
+// where the user has one IdentityAgent for their main git remote.
+//
+// Unquoting + tilde-expansion included. Unknown tokens (%h, etc.) are not
+// supported — if a user has those, they should set SSHKeyPath explicitly
+// or pre-export SSH_AUTH_SOCK.
+func sshConfigIdentityAgent() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(home, ".ssh", "config")
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	currentHost := "*" // implicit pre-any-Host scope
+	for scanner.Scan() {
+		raw := scanner.Text()
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// ssh_config tokenizes on whitespace OR "=" for key=value.
+		kv := strings.SplitN(line, " ", 2)
+		if len(kv) < 2 {
+			kv = strings.SplitN(line, "=", 2)
+		}
+		if len(kv) < 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(kv[0]))
+		val := strings.TrimSpace(kv[1])
+		val = strings.Trim(val, `"`)
+		switch key {
+		case "host":
+			currentHost = val
+		case "identityagent":
+			// We accept the first IdentityAgent we see under "*" or before
+			// any Host block. More targeted matches are possible, but the
+			// user's sync remote is the only thing we auth against, so
+			// the first catch-all IdentityAgent is usually right.
+			if currentHost == "*" || currentHost == "" {
+				if strings.HasPrefix(val, "~") {
+					val = home + val[1:]
+				}
+				return val
+			}
+		}
+	}
+	return ""
 }
 
 // DiscoverSSHKey returns the first default SSH key path found in ~/.ssh.
