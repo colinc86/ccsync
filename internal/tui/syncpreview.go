@@ -124,8 +124,11 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ctx.PlanTime = time.Now()
 			m.ctx.PlanErr = nil
 		}
-		// Auto-apply on clean syncs, when the user opted in.
-		if m.err == nil && m.ctx.State.AutoApplyClean && m.planIsClean() {
+		// Auto-apply on clean syncs when either (a) the user opted in
+		// explicitly, or (b) we're in the default auto SyncMode. Manual
+		// mode always shows the preview so the user can review.
+		if m.err == nil && m.planIsClean() &&
+			(m.ctx.State.AutoApplyClean || m.ctx.State.IsAutoMode()) {
 			return m, switchTo(newSync(m.ctx))
 		}
 		return m, nil

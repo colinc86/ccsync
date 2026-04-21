@@ -176,6 +176,24 @@ func (m *settingsModel) buildRows() {
 		// --- behavior ---
 		heading("behavior"),
 		{
+			label: "sync mode", kind: kindRadio,
+			options: []string{"auto", "manual"},
+			value: func() string {
+				if ctx.State.IsAutoMode() {
+					return "auto"
+				}
+				return "manual"
+			},
+			cycle: func() error {
+				if ctx.State.IsAutoMode() {
+					ctx.State.SyncMode = "manual"
+				} else {
+					ctx.State.SyncMode = "auto"
+				}
+				return state.Save(ctx.StateDir, ctx.State)
+			},
+		},
+		{
 			label: "secrets backend", kind: kindRadio,
 			options: []string{"keychain", "file"},
 			value:   func() string { return currentSecretsLabel(ctx.State.SecretsBackend) },

@@ -151,6 +151,11 @@ type AppModel struct {
 	width   int
 	height  int
 	help    bool // `?` overlay visible
+
+	// autoWatchCh is the subscription channel delivering debounced file-
+	// change events from the filesystem watcher goroutine. Non-nil only
+	// when SyncMode == auto and the repo is bootstrapped.
+	autoWatchCh <-chan struct{}
 }
 
 // New constructs the root model. First-run users (no sync repo and the
@@ -180,12 +185,14 @@ func needsOnboarding(ctx *AppContext) bool {
 }
 
 // Init satisfies tea.Model. Kicks off the first status refresh, schedules
-// the next periodic refresh if opted in, and triggers a one-shot update
-// check plus its own daily cadence.
+// the next periodic refresh if opted in, starts the auto-sync watcher
+// when SyncMode == auto, and triggers a one-shot update check plus its
+// own daily cadence.
 func (m AppModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		refreshPlanCmd(m.ctx),
 		schedulePeriodicRefresh(m.ctx),
+		startAutoWatchCmd(m.ctx),
 		checkForUpdateCmd(),
 		schedulePeriodicUpdateCheck(),
 	}
@@ -311,6 +318,30 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case periodicUpdateCheckTickMsg:
 		// Re-run the check and schedule another tick for ~24h from now.
 		return m, tea.Batch(checkForUpdateCmd(), schedulePeriodicUpdateCheck())
+
+	case autoWatchStartedMsg:
+		// The watcher goroutine is up; stash the channel and start pulling
+		// one event at a time via nextAutoWatchEventCmd. Cancel handle is
+		// retained for a future shutdown hook; bubbletea has no native
+		// "on quit" seam, so for now the goroutine is orphaned at tea.Quit
+		// and the OS reaps it when the process exits.
+		_ = msg.cancel // intentionally retained but unused; see comment
+		m.autoWatchCh = msg.ch
+		return m, nextAutoWatchEventCmd(m.autoWatchCh)
+	case autoSyncTickMsg:
+		// File watcher detected a debounced change. Fire a background
+		// sync and keep listening for the next event.
+		return m, tea.Batch(
+			runAutoSyncCmd(m.ctx),
+			nextAutoWatchEventCmd(m.autoWatchCh),
+		)
+	case autoSyncAppliedMsg:
+		// After any auto-sync (success, conflict-bail, or error) refresh
+		// the plan so the dashboard reflects current state. Errors are
+		// intentionally not surfaced as a pop-up — auto mode is silent
+		// by design; the status bar shows "fetch failed" when relevant.
+		m.ctx.RefreshState()
+		return m, refreshPlanCmd(m.ctx)
 	}
 
 	top := m.screens[len(m.screens)-1]

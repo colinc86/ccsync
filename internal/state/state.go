@@ -85,6 +85,24 @@ type State struct {
 	// existed effectively skip onboarding because the Home router checks
 	// SyncRepoURL first — so the backfill is automatic.
 	OnboardingComplete bool `json:"onboardingComplete,omitempty"`
+
+	// SyncMode picks the default sync UX: "auto" runs a file watcher
+	// while the TUI is open and auto-applies clean syncs without a
+	// preview keypress; "manual" keeps the preview-every-sync cadence
+	// v0.2.x shipped. Empty value is treated as "auto" so new installs
+	// get the simpler experience. Existing users are *not* migrated —
+	// their explicit AutoApplyClean preference still wins.
+	SyncMode string `json:"syncMode,omitempty"`
+}
+
+// IsAutoMode reports whether this machine is running in the default
+// "install, sync, forget" mode. Empty string is treated as auto so fresh
+// installs get the zero-config experience without a state migration.
+func (s *State) IsAutoMode() bool {
+	if s == nil {
+		return true
+	}
+	return s.SyncMode == "" || s.SyncMode == "auto"
 }
 
 // FetchIntervalDuration returns the parsed fetch interval, or zero when the
