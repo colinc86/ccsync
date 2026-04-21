@@ -196,6 +196,40 @@ func relevantEvent(ev fsnotify.Event, app *AppContext, m *ignore.Matcher) bool {
 	return true
 }
 
+// maybeLaunchAutoSync returns a tea.Cmd that dispatches a background
+// auto-sync when the first launch-driven plan refresh shows pending
+// actions with no conflicts. Returns nil for any of:
+//   - manual mode (the auto-mode gate is the whole point)
+//   - already latched AutoSyncedOnLaunch (this is a one-shot)
+//   - in-flight AutoSyncing (don't race two real syncs)
+//   - no plan yet, or an error fetching it
+//   - plan has conflicts (auto never picks a side)
+//   - plan is fully clean (nothing to do; common case)
+func maybeLaunchAutoSync(ctx *AppContext) tea.Cmd {
+	if ctx == nil || ctx.State == nil {
+		return nil
+	}
+	if !ctx.State.IsAutoMode() {
+		return nil
+	}
+	if ctx.AutoSyncedOnLaunch || ctx.AutoSyncing {
+		return nil
+	}
+	if ctx.Plan == nil || ctx.PlanErr != nil {
+		return nil
+	}
+	if len(ctx.Plan.Conflicts) > 0 {
+		return nil
+	}
+	s := ctx.Summary()
+	if s.Outbound == 0 && s.Inbound == 0 {
+		return nil
+	}
+	ctx.AutoSyncedOnLaunch = true
+	ctx.AutoSyncing = true
+	return runAutoSyncCmd(ctx)
+}
+
 // runAutoSyncCmd runs a full sync.Run in the background and emits
 // autoSyncAppliedMsg on completion. The sync is a no-op when nothing has
 // changed (gate inside sync.Run), so firing this on every debounced tick

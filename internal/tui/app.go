@@ -60,6 +60,17 @@ type AppContext struct {
 	UpdateCheckedAt  time.Time
 	UpdateCheckErr   error
 	UpdateInstalling bool
+
+	// AutoSyncedOnLaunch latches after the first launch-driven auto-sync
+	// has fired so subsequent plan refreshes (the periodic background
+	// tick, the post-sync refresh) don't cascade into another sync. The
+	// file-watcher path is unaffected; it triggers on actual filesystem
+	// changes, not plan deltas.
+	AutoSyncedOnLaunch bool
+	// AutoSyncing is a latch used by the plan-refresh → auto-sync
+	// handoff to avoid racing two real syncs when the refresh finishes
+	// while an earlier auto-sync is still in flight.
+	AutoSyncing bool
 }
 
 // ConfigPath returns the on-disk ccsync.yaml path. Before bootstrap, an
@@ -308,6 +319,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ctx.Plan = msg.plan
 		m.ctx.PlanErr = msg.err
 		m.ctx.PlanTime = msg.at
+		// First plan refresh under auto mode with pending actions and no
+		// conflicts: trigger the real sync silently. The file-watcher
+		// already covers live changes while the TUI is open — this is
+		// the symmetric path for "change happened before launch." Latched
+		// by AutoSyncedOnLaunch so periodic refreshes don't re-trigger.
+		if cmd := maybeLaunchAutoSync(m.ctx); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
 	case periodicRefreshTickMsg:
 		// Drop ticks from a superseded interval — the user changed the
@@ -359,7 +378,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nextAutoWatchEventCmd(m.autoWatchCh)
 	case autoSyncTickMsg:
 		// File watcher detected a debounced change. Fire a background
-		// sync and keep listening for the next event.
+		// sync and keep listening for the next event. Coalesce into any
+		// already-running auto-sync — the new event will be picked up on
+		// the next tick once the in-flight one returns.
+		if m.ctx.AutoSyncing {
+			return m, nextAutoWatchEventCmd(m.autoWatchCh)
+		}
+		m.ctx.AutoSyncing = true
 		return m, tea.Batch(
 			runAutoSyncCmd(m.ctx),
 			nextAutoWatchEventCmd(m.autoWatchCh),
@@ -369,6 +394,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the plan so the dashboard reflects current state. Errors are
 		// intentionally not surfaced as a pop-up — auto mode is silent
 		// by design; the status bar shows "fetch failed" when relevant.
+		m.ctx.AutoSyncing = false
 		m.ctx.RefreshState()
 		return m, refreshPlanCmd(m.ctx)
 	}
