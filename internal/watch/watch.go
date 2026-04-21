@@ -82,7 +82,7 @@ func Run(ctx context.Context, in Inputs) error {
 		}()
 
 		fmt.Fprintf(in.Out, "sync triggered at %s\n", time.Now().Local().Format("15:04:05"))
-		res, err := syncpkg.Run(ctx, in.SyncInputs, nil)
+		res, err := syncpkg.RunWithRetry(ctx, in.SyncInputs, nil)
 		if err != nil {
 			fmt.Fprintf(in.Out, "  error: %v\n", err)
 			return

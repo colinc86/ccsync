@@ -268,6 +268,19 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		if localAbs == "" {
 			localAbs = repoPathToLocal(path, in.Profile, in.ClaudeDir, in.ClaudeJSON)
 		}
+		// Stale-exclude GC: when a repo-only path (no local equivalent)
+		// matches the active .syncignore, the user has excluded it since
+		// the last sync. We don't want to pull it down (violates their
+		// explicit intent) or surface it as a conflict. If remote still
+		// holds it, DeleteRemote silently; otherwise NoOp. Profile
+		// excludes stay orthogonal — they have their own path below.
+		if localSHA == "" && remoteSHA != "" && matchesSyncignore(matcher, path, profilePrefix) {
+			if remoteSHA != "" {
+				action = manifest.ActionDeleteRemote
+			} else {
+				action = manifest.ActionNoOp
+			}
+		}
 		excluded := profileExcluded(profileMatcher, path, profilePrefix)
 		plan.Actions = append(plan.Actions, FileAction{
 			Path: path, LocalAbs: localAbs, Action: action,
@@ -597,4 +610,29 @@ func profileExcluded(m *ignore.Matcher, repoPath, profilePrefix string) bool {
 		return false
 	}
 	return m.Matches(rel)
+}
+
+// matchesSyncignore reports whether a repo path (profiles/<name>/<rel>)
+// would be skipped by discover.Walk under the active .syncignore. The
+// matcher is configured with rules relative to ~/.claude (e.g. "projects/
+// ", "cache-*.dat"), which in repo-space map to paths under
+// "profiles/<profile>/claude/". We strip the "profiles/<profile>/claude/"
+// prefix and test the remainder; anything outside that prefix (e.g. a
+// "profiles/<profile>/claude.json" root file, or repo-level metadata) is
+// never syncignore-matched here.
+func matchesSyncignore(m *ignore.Matcher, repoPath, profilePrefix string) bool {
+	if m == nil {
+		return false
+	}
+	rel := strings.TrimPrefix(repoPath, profilePrefix)
+	if rel == repoPath {
+		return false
+	}
+	// Only the "claude/" subtree is walked by discover — the "claude.json"
+	// root file and any future repo-level paths bypass syncignore.
+	claudeRel, ok := strings.CutPrefix(rel, "claude/")
+	if !ok {
+		return false
+	}
+	return m.Matches(claudeRel)
 }

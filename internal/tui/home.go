@@ -232,7 +232,10 @@ func (m homeModel) renderDashboard() string {
 		return sb.String()
 	}
 
-	// Status line — the primary visible element of the dashboard.
+	// Status line — the primary visible element of the dashboard. We
+	// intentionally render the non-compact badge here (the header carries
+	// the compact variant on every screen); the dashboard is where the
+	// user looks for the full readout.
 	badge := SummaryBadge(m.ctx.Summary(), false)
 	if badge == "" {
 		badge = theme.Hint.Render("status unknown")

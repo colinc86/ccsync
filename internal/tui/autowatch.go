@@ -222,8 +222,10 @@ func runAutoSyncCmd(ctx *AppContext) tea.Cmd {
 			// will show them on the next refresh.
 			return autoSyncAppliedMsg{}
 		}
-		// Execute the real sync. sync.Run already suppresses no-op commits.
-		_, err = syncpkg.Run(context.Background(), in, nil)
+		// Execute the real sync. sync.Run already suppresses no-op commits,
+		// and RunWithRetry absorbs the rare non-fast-forward race so the
+		// user never sees a raw git error from the silent auto-sync path.
+		_, err = syncpkg.RunWithRetry(context.Background(), in, nil)
 		return autoSyncAppliedMsg{err: err}
 	}
 }

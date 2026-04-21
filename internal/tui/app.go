@@ -384,13 +384,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the top screen inside a titled card. A persistent status bar
 // below the body keeps profile / exclude / host-class context visible on
 // every screen. When the user is deep in the screen stack, the header shows
-// breadcrumbs (Home > Settings > ccsync.yaml) so they know how to get back.
+// breadcrumbs (Home > Settings > ccsync.yaml) so they know how to get back,
+// and a freshness badge (✓ in sync / ↑N ↓M) sits on the right so the user
+// always knows the repo's pulse without navigating back to Home.
 func (m AppModel) View() string {
 	if len(m.screens) == 0 {
 		return ""
 	}
 	top := m.screens[len(m.screens)-1]
-	header := renderBreadcrumbs(m.screens)
+	header := renderHeader(m.screens, m.ctx, m.width)
 	status := statusBar(m.ctx)
 	footer := theme.Hint.Render(navigationHint(m.screens) + " • ? help")
 	body := top.View()
@@ -398,6 +400,26 @@ func (m AppModel) View() string {
 		body = renderHelpOverlay()
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", status, footer)
+}
+
+// renderHeader builds the top line: breadcrumbs on the left, a compact
+// freshness badge on the right. When the terminal width isn't known yet
+// (WindowSizeMsg hasn't arrived), we fall back to a space-separated
+// left-aligned layout — still correct, just not right-justified.
+func renderHeader(screens []screen, ctx *AppContext, width int) string {
+	crumbs := renderBreadcrumbs(screens)
+	if ctx == nil || ctx.State == nil || ctx.State.SyncRepoURL == "" {
+		return crumbs
+	}
+	badge := SummaryBadge(ctx.Summary(), true)
+	if badge == "" {
+		return crumbs
+	}
+	if width <= 0 {
+		return crumbs + "  " + badge
+	}
+	gap := max(2, width-lipgloss.Width(crumbs)-lipgloss.Width(badge))
+	return crumbs + strings.Repeat(" ", gap) + badge
 }
 
 // navigationHint picks the right one-liner for the current stack. On Home

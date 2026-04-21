@@ -35,11 +35,10 @@ func statusBar(ctx *AppContext) string {
 
 	if ctx.State.SyncRepoURL == "" {
 		parts = append(parts, theme.Warn.Render("no repo"))
-	} else {
-		if badge := SummaryBadge(ctx.Summary(), true); badge != "" {
-			parts = append(parts, badge)
-		}
 	}
+	// The freshness badge used to live here too; as of v0.3 it's rendered
+	// in the top header by AppModel.View so there's a single source of
+	// truth for "are we in sync" at a glance.
 
 	return theme.Hint.Render(strings.Join(parts, " • "))
 }

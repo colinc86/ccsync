@@ -30,7 +30,7 @@ import (
 	"github.com/colinc86/ccsync/internal/why"
 )
 
-const version = "0.3.0-alpha1"
+const version = "0.3.0-alpha2"
 
 func init() {
 	updater.SetCurrentVersion(version)
@@ -133,7 +133,7 @@ func runHeadlessSync(args []string) int {
 	repoPath := filepath.Join(ctx.StateDir, "repo")
 	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
 
-	res, err := sync.Run(context.Background(), sync.Inputs{
+	res, err := sync.RunWithRetry(context.Background(), sync.Inputs{
 		Config:      ctx.Config,
 		Profile:     profile,
 		ClaudeDir:   ctx.ClaudeDir,

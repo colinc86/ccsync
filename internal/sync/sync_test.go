@@ -528,6 +528,79 @@ func TestInheritedFileArrivesOnMachineMissingLocal(t *testing.T) {
 	}
 }
 
+// TestStaleExcludeGC — a repo with content that used to sync but is now
+// covered by a .syncignore rule (e.g. projects/ in the v0.3 default set)
+// should have that content silently DeleteRemote'd on the next sync,
+// not surfaced as a conflict or stale forever.
+func TestStaleExcludeGC(t *testing.T) {
+	secrets.MockInit()
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.LoadDefault()
+
+	homeA := filepath.Join(tmp, "home")
+	repoA := filepath.Join(tmp, "repo")
+	stateA := filepath.Join(tmp, "state")
+	seedMachine(t, homeA)
+	// Seed a file under an IGNORED subtree locally — we want to prove that
+	// the cleanup happens even when the user no longer has it on disk.
+	// Since the file is in the syncignore-excluded "projects/" dir,
+	// discover.Walk will skip it on local side.
+	if err := os.MkdirAll(filepath.Join(homeA, ".claude/projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Init(repoA, bareDir); err != nil {
+		t.Fatal(err)
+	}
+	// First sync: push everything that passes the ignore matcher.
+	if _, err := Run(context.Background(), machineInputs(homeA, repoA, stateA, cfg), nil); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+
+	// Now stash a legacy file directly in the repo worktree — simulating
+	// a repo that carries pre-v0.3 content in an excluded subtree.
+	legacyRel := "profiles/default/claude/projects/legacy.md"
+	legacyAbs := filepath.Join(repoA, legacyRel)
+	if err := os.MkdirAll(filepath.Dir(legacyAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyAbs, []byte("leftover"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Commit + push the legacy file so it's on the remote and a future
+	// discover pass will see it in remoteEntries.
+	r, _ := gitx.Open(repoA)
+	_ = r.AddAll()
+	if _, err := r.Commit("add legacy", "test", "test@example.com"); err != nil {
+		t.Fatalf("commit legacy: %v", err)
+	}
+	if err := r.Push(context.Background(), nil); err != nil {
+		t.Fatalf("push legacy: %v", err)
+	}
+
+	// Second sync: the local .syncignore now covers projects/, and the
+	// legacy file has no local equivalent. Expected: silent DeleteRemote,
+	// no conflict, no re-pull to disk.
+	res, err := Run(context.Background(), machineInputs(homeA, repoA, stateA, cfg), nil)
+	if err != nil {
+		t.Fatalf("gc sync: %v", err)
+	}
+	if len(res.Plan.Conflicts) > 0 {
+		t.Fatalf("unexpected conflicts: %+v", res.Plan.Conflicts)
+	}
+	// The legacy file must be gone from the repo worktree.
+	if _, err := os.Stat(legacyAbs); err == nil {
+		t.Error("legacy file still present in repo worktree after GC")
+	}
+	// And must not have been pulled to local either.
+	if _, err := os.Stat(filepath.Join(homeA, ".claude/projects/legacy.md")); err == nil {
+		t.Error("excluded file was pulled to local despite syncignore")
+	}
+}
+
 func TestDryRunReturnsPlanWithoutWrites(t *testing.T) {
 	secrets.MockInit()
 	tmp := t.TempDir()

@@ -59,7 +59,7 @@ func startSync(ctx *AppContext, onlyPaths map[string]bool) tea.Cmd {
 				return
 			}
 			in.OnlyPaths = onlyPaths
-			res, err := sync.Run(context.Background(), in, events)
+			res, err := sync.RunWithRetry(context.Background(), in, events)
 			close(events)
 			doneCh <- doneMsg{res: res, err: err}
 		}()
