@@ -370,12 +370,18 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		}
 	}
 
-	// README + manifest only get rewritten when something real happened to
-	// the repo side. Without this gate, time.Now()-carrying writes made
-	// every sync "dirty", produced a no-op commit, and pushed it — the
-	// user's git history filled with syncs that changed nothing.
+	// Only touch README + manifest when the content writes above actually
+	// produced a diff. Otherwise time.Now() inside README/manifest makes
+	// every sync "dirty" and we commit no-op after no-op — the exact bug
+	// v0.2.0 tried to fix but only partially. The content writes happened
+	// earlier (pendingRepoWrites loop above); check HasChanges now, and
+	// bail out if the merged content was identical to what was on disk.
 	var commitSHA string
-	if len(pendingRepoWrites) > 0 {
+	hasChanges, err := repo.HasChanges()
+	if err != nil {
+		return Result{}, err
+	}
+	if hasChanges {
 		profiles := listProfilesFromRepo(in.RepoPath)
 		_ = writeRepoREADME(in.RepoPath, profiles, state, in.HostName)
 
@@ -395,24 +401,18 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			return Result{}, err
 		}
 
-		hasChanges, err := repo.HasChanges()
+		emit("commit", "committing", "")
+		if err := repo.AddAll(); err != nil {
+			return Result{}, err
+		}
+		msg := commitMessage(in.Profile, in.HostName, plan, remoteEntries, pendingRepoWrites)
+		commitSHA, err = repo.Commit(msg, in.HostName, in.AuthorEmail)
 		if err != nil {
 			return Result{}, err
 		}
-		if hasChanges {
-			emit("commit", "committing", "")
-			if err := repo.AddAll(); err != nil {
-				return Result{}, err
-			}
-			msg := commitMessage(in.Profile, in.HostName, plan, remoteEntries, pendingRepoWrites)
-			commitSHA, err = repo.Commit(msg, in.HostName, in.AuthorEmail)
-			if err != nil {
-				return Result{}, err
-			}
-			emit("push", "pushing to remote", "")
-			if err := repo.Push(ctx, in.Auth); err != nil {
-				return Result{}, err
-			}
+		emit("push", "pushing to remote", "")
+		if err := repo.Push(ctx, in.Auth); err != nil {
+			return Result{}, err
 		}
 	}
 
