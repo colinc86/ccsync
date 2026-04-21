@@ -79,6 +79,17 @@ jsonFiles:
   "~/.claude/settings.json":
     include:
       - $
+    exclude:
+      # Permissions grow as Claude Code prompts for each new Bash /
+      # WebFetch pattern. The entries are project- and machine-local by
+      # nature — `Bash(cd /Users/colin/specific/path:*)` on one machine
+      # means nothing on another. Syncing them causes a grinding conflict
+      # every sync because both sides keep appending different entries.
+      # Users who want a permission on every machine should grant it on
+      # each, or edit settings.json manually.
+      - $.permissions.allow
+      - $.permissions.deny
+      - $.permissions.ask
     redact:
       - $.statusLine.command
 
