@@ -392,6 +392,18 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 				continue
 			}
 			data = restored.Data
+			// Preserve any machine-local keys the rule excludes from sync
+			// (oauthAccount, userID, permissions.allow, etc.). Without
+			// this, the full-file os.WriteFile below would wipe them on
+			// every pull — hence "I have to re-login on work every time."
+			if rule, ok := jsonRules[abs]; ok && len(rule.Exclude) > 0 {
+				existing, _ := os.ReadFile(abs)
+				preserved, err := jsonfilter.PreserveLocalExcludes(data, existing, rule.Exclude)
+				if err != nil {
+					return Result{}, fmt.Errorf("preserve local excludes %s: %w", abs, err)
+				}
+				data = preserved
+			}
 		}
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return Result{}, err

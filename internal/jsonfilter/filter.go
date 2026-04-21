@@ -103,6 +103,62 @@ func Apply(data []byte, rule config.JSONFileRule, profile string) (FilterResult,
 	return FilterResult{Data: pretty, Redactions: redactions}, nil
 }
 
+// PreserveLocalExcludes splices values at `excludes` paths from the local
+// original file into the incoming filtered bytes. Prevents the full-file
+// overwrite on pull from wiping machine-local keys (oauthAccount,
+// userID, permissions.allow, sessionId, …) that the filter legitimately
+// kept out of the repo but that still need to live on this machine.
+//
+// Contract: incoming is what we're about to write (filtered + redaction-
+// restored). localOriginal is the bytes currently on disk, or empty for
+// a fresh machine. excludes are the same JSONPath-lite patterns that
+// produced the filter — we re-compile each, match against the local
+// original, and for every matched concrete path we stamp the local's
+// value into the incoming document. Result: incoming's syncable fields
+// are applied; local's machine-only fields are preserved. Local file
+// missing or unparseable → returns incoming unchanged, with no error
+// (first-run is a legitimate AddLocal, not a bug).
+func PreserveLocalExcludes(incoming, localOriginal []byte, excludes []string) ([]byte, error) {
+	if len(localOriginal) == 0 || len(excludes) == 0 {
+		return incoming, nil
+	}
+	var localParsed any
+	if err := json.Unmarshal(localOriginal, &localParsed); err != nil {
+		// Local file isn't valid JSON — safer to just write incoming and
+		// let the user re-establish any machine-local state manually than
+		// to crash mid-sync. Rare; local should always be something we
+		// wrote ourselves.
+		return incoming, nil
+	}
+	out := incoming
+	for _, pat := range excludes {
+		m, err := Compile(pat)
+		if err != nil {
+			return nil, fmt.Errorf("bad exclude %q: %w", pat, err)
+		}
+		for _, path := range m.Match(localParsed) {
+			val := extract(localParsed, path)
+			if val == nil {
+				continue
+			}
+			raw, err := json.Marshal(val)
+			if err != nil {
+				return nil, err
+			}
+			out, err = sjson.SetRawBytes(out, path, raw)
+			if err != nil {
+				return nil, fmt.Errorf("splice %q: %w", path, err)
+			}
+		}
+	}
+	// Re-pretty so key ordering stays deterministic after splices.
+	pretty, err := prettyJSON(out)
+	if err != nil {
+		return out, nil // best-effort; original write still works
+	}
+	return pretty, nil
+}
+
 // RestoreResult is the output of Restore.
 type RestoreResult struct {
 	Data    []byte
