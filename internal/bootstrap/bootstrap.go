@@ -57,13 +57,21 @@ func Run(ctx context.Context, in Inputs) (*state.State, error) {
 		return nil, err
 	}
 
-	auth, _ := gitx.AuthConfig{
+	auth, authErr := gitx.AuthConfig{
 		Kind:       gitxKind(in.Auth),
 		SSHKeyPath: in.SSHKey,
 		HTTPSUser:  in.HTTPSUser,
 	}.Resolve()
+	if authErr != nil {
+		return nil, fmt.Errorf("auth setup failed: %w "+
+			"(hint: unlock your SSH key with `ssh-add`, or use `--auth https` with a token)",
+			authErr)
+	}
 
 	if _, err := gitx.Clone(ctx, targetURL, repoPath, auth); err != nil {
+		// Clean up the partial clone directory so the user can retry
+		// without hitting "already exists" from the guard above.
+		_ = os.RemoveAll(repoPath)
 		if _, initErr := gitx.Init(repoPath, targetURL); initErr != nil {
 			return nil, fmt.Errorf("clone failed (%v) and init fallback failed: %w", err, initErr)
 		}

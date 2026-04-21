@@ -41,6 +41,12 @@ type AuthConfig struct {
 }
 
 // Resolve turns the config into a go-git AuthMethod.
+//
+// Important: never leak a typed-nil AuthMethod. If construction fails on
+// any branch, return an explicitly-nil interface + the error. Callers that
+// ignore the error and use the first return value would otherwise get a
+// non-nil interface wrapping a nil pointer, which go-git method-calls and
+// segfaults on (happened in v0.1.0 bootstrap for passphrase-protected keys).
 func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 	switch c.Kind {
 	case AuthNone:
@@ -54,7 +60,18 @@ func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 			}
 			keyPath = p
 		}
-		return gitssh.NewPublicKeysFromFile("git", keyPath, c.SSHPassphrase)
+		pk, err := gitssh.NewPublicKeysFromFile("git", keyPath, c.SSHPassphrase)
+		if err != nil {
+			// Passphrase-protected keys without a cached passphrase fail
+			// here. Fall back to ssh-agent (typical macOS setup — Keychain
+			// feeds the passphrase into the agent on first use) before
+			// giving up.
+			if agent, aerr := gitssh.NewSSHAgentAuth("git"); aerr == nil {
+				return agent, nil
+			}
+			return nil, err
+		}
+		return pk, nil
 	case AuthHTTPS:
 		if c.HTTPSToken == "" {
 			return nil, errors.New("HTTPS auth requires a token")
