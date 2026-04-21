@@ -93,6 +93,218 @@ type State struct {
 	// get the simpler experience. Existing users are *not* migrated —
 	// their explicit AutoApplyClean preference still wins.
 	SyncMode string `json:"syncMode,omitempty"`
+
+	// Policies per-category × per-direction. Empty value in any slot is
+	// treated as "auto" so existing state.json files from v0.3/v0.4 keep
+	// their silent-sync behavior — only users who opt in (or go through
+	// the fresh-install wizard) see review prompts. See
+	// internal/category for the canonical list of category names.
+	Policies CategoryPolicies `json:"policies,omitempty"`
+
+	// DeniedPaths is the per-machine denylist added to by the review
+	// screen whenever the user says "don't push this / don't pull this"
+	// on a categorized item. Layered on top of profile excludes at sync
+	// time; applies equally to push and pull. Repo-relative paths under
+	// the active profile prefix (e.g. "claude/commands/work-only.md").
+	DeniedPaths []string `json:"deniedPaths,omitempty"`
+
+	// DeniedMCPServers is the per-machine denylist for specific MCP
+	// server keys inside ~/.claude.json. Entries are the map keys under
+	// $.mcpServers (e.g. "gemini", "notion") — not JSON paths. When a
+	// server name appears here, its value under local's ~/.claude.json
+	// is preserved through any sync touching mcpServers (same splice
+	// trick as jsonfilter.PreserveLocalExcludes).
+	DeniedMCPServers []string `json:"deniedMcpServers,omitempty"`
+}
+
+// CategoryPolicies is the (category, direction) → policy matrix stored
+// per machine. All fields optional — empty values resolve to "auto" via
+// State.PolicyFor so upgrading users keep v0.4.x behavior until they
+// opt in from Settings.
+type CategoryPolicies struct {
+	Agents          DirectionPolicy `json:"agents,omitempty"`
+	Skills          DirectionPolicy `json:"skills,omitempty"`
+	Commands        DirectionPolicy `json:"commands,omitempty"`
+	Memory          DirectionPolicy `json:"memory,omitempty"`
+	MCPServers      DirectionPolicy `json:"mcpServers,omitempty"`
+	ClaudeMD        DirectionPolicy `json:"claudeMD,omitempty"`
+	GeneralSettings DirectionPolicy `json:"generalSettings,omitempty"`
+	Other           DirectionPolicy `json:"other,omitempty"`
+}
+
+// DirectionPolicy pairs the push and pull policies for one category.
+// Either may be "", "auto", "review", or "never"; "" resolves to "auto"
+// via State.PolicyFor.
+type DirectionPolicy struct {
+	Push string `json:"push,omitempty"`
+	Pull string `json:"pull,omitempty"`
+}
+
+// Direction names a sync direction for PolicyFor lookups.
+type Direction string
+
+const (
+	DirPush Direction = "push"
+	DirPull Direction = "pull"
+)
+
+// Policy canonical values. Empty (zero value) is treated as PolicyAuto
+// so v0.4 state rolls forward cleanly.
+const (
+	PolicyAuto   = "auto"
+	PolicyReview = "review"
+	PolicyNever  = "never"
+)
+
+// PolicyFor returns the effective policy for a (category, direction)
+// pair. Unknown category names fall back to Other. Empty slots resolve
+// to auto.
+func (s *State) PolicyFor(category string, dir Direction) string {
+	if s == nil {
+		return PolicyAuto
+	}
+	dp := s.Policies.directionPolicy(category)
+	var v string
+	switch dir {
+	case DirPush:
+		v = dp.Push
+	case DirPull:
+		v = dp.Pull
+	}
+	if v == "" {
+		return PolicyAuto
+	}
+	return v
+}
+
+// SetPolicy updates the policy for one (category, direction) pair.
+// Returns the previous value so callers can undo or log transitions.
+func (s *State) SetPolicy(category string, dir Direction, policy string) string {
+	if s == nil {
+		return ""
+	}
+	prev := s.PolicyFor(category, dir)
+	switch category {
+	case "agents":
+		setDir(&s.Policies.Agents, dir, policy)
+	case "skills":
+		setDir(&s.Policies.Skills, dir, policy)
+	case "commands":
+		setDir(&s.Policies.Commands, dir, policy)
+	case "memory":
+		setDir(&s.Policies.Memory, dir, policy)
+	case "mcp_servers":
+		setDir(&s.Policies.MCPServers, dir, policy)
+	case "claude_md":
+		setDir(&s.Policies.ClaudeMD, dir, policy)
+	case "general_settings":
+		setDir(&s.Policies.GeneralSettings, dir, policy)
+	default:
+		setDir(&s.Policies.Other, dir, policy)
+	}
+	return prev
+}
+
+func (p CategoryPolicies) directionPolicy(category string) DirectionPolicy {
+	switch category {
+	case "agents":
+		return p.Agents
+	case "skills":
+		return p.Skills
+	case "commands":
+		return p.Commands
+	case "memory":
+		return p.Memory
+	case "mcp_servers":
+		return p.MCPServers
+	case "claude_md":
+		return p.ClaudeMD
+	case "general_settings":
+		return p.GeneralSettings
+	}
+	return p.Other
+}
+
+func setDir(dp *DirectionPolicy, dir Direction, policy string) {
+	switch dir {
+	case DirPush:
+		dp.Push = policy
+	case DirPull:
+		dp.Pull = policy
+	}
+}
+
+// IsPathDenied reports whether a repo-relative path (already stripped
+// of the profile prefix — e.g. "claude/commands/foo.md") is on this
+// machine's denylist. Comparison is literal; glob patterns would need
+// a matcher which we don't have on this hot path yet.
+func (s *State) IsPathDenied(repoRelPath string) bool {
+	if s == nil {
+		return false
+	}
+	for _, p := range s.DeniedPaths {
+		if p == repoRelPath {
+			return true
+		}
+	}
+	return false
+}
+
+// IsMCPServerDenied reports whether a specific mcpServers key is on
+// this machine's denylist.
+func (s *State) IsMCPServerDenied(name string) bool {
+	if s == nil {
+		return false
+	}
+	for _, n := range s.DeniedMCPServers {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// DenyPath adds a path to the denylist, idempotent. Caller is
+// responsible for Save'ing state afterwards.
+func (s *State) DenyPath(repoRelPath string) {
+	if s == nil || s.IsPathDenied(repoRelPath) {
+		return
+	}
+	s.DeniedPaths = append(s.DeniedPaths, repoRelPath)
+}
+
+// AllowPath removes a path from the denylist if present.
+func (s *State) AllowPath(repoRelPath string) {
+	if s == nil {
+		return
+	}
+	for i, p := range s.DeniedPaths {
+		if p == repoRelPath {
+			s.DeniedPaths = append(s.DeniedPaths[:i], s.DeniedPaths[i+1:]...)
+			return
+		}
+	}
+}
+
+// DenyMCPServer adds a server name to the denylist, idempotent.
+func (s *State) DenyMCPServer(name string) {
+	if s == nil || s.IsMCPServerDenied(name) {
+		return
+	}
+	s.DeniedMCPServers = append(s.DeniedMCPServers, name)
+}
+
+// AllowMCPServer removes a server name from the denylist if present.
+func (s *State) AllowMCPServer(name string) {
+	if s == nil {
+		return
+	}
+	for i, n := range s.DeniedMCPServers {
+		if n == name {
+			s.DeniedMCPServers = append(s.DeniedMCPServers[:i], s.DeniedMCPServers[i+1:]...)
+			return
+		}
+	}
 }
 
 // IsAutoMode reports whether this machine is running in the default

@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
+	"github.com/colinc86/ccsync/internal/category"
 	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/discover"
 	"github.com/colinc86/ccsync/internal/gitx"
@@ -20,6 +21,7 @@ import (
 	"github.com/colinc86/ccsync/internal/merge"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/snapshot"
+	ccstate "github.com/colinc86/ccsync/internal/state"
 )
 
 // Inputs bundles everything Run needs.
@@ -282,15 +284,21 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			}
 		}
 		excluded := profileExcluded(profileMatcher, path, profilePrefix)
+		denied := pathDenied(state, path, profilePrefix)
+		cat := category.Classify(strings.TrimPrefix(path, profilePrefix))
 		plan.Actions = append(plan.Actions, FileAction{
 			Path: path, LocalAbs: localAbs, Action: action,
 			ExcludedByProfile: excluded,
+			ExcludedByDeny:    denied,
+			Category:          cat,
 		})
 
-		// Profile excludes take precedence over everything else. The file is
-		// invisible to this machine's sync; we neither push nor pull nor
-		// delete. If it already exists locally, the user can remove it by hand.
-		if excluded {
+		// Profile excludes and per-machine denies both take precedence
+		// over the three-way merge. The file is invisible to this
+		// machine's sync; we neither push nor pull nor delete. If it
+		// already exists locally, the user can remove it by hand (or
+		// lift the deny via the review screen).
+		if excluded || denied {
 			continue
 		}
 
@@ -607,6 +615,21 @@ func jsonString(b []byte) string {
 		return ""
 	}
 	return string(b)
+}
+
+// pathDenied reports whether a repo path is on this machine's per-user
+// denylist (state.DeniedPaths). Denied paths are machine-local: they
+// take the same "ignore at sync time" shape as profile excludes but
+// don't propagate across machines via the repo.
+func pathDenied(st *ccstate.State, repoPath, profilePrefix string) bool {
+	if st == nil {
+		return false
+	}
+	rel := strings.TrimPrefix(repoPath, profilePrefix)
+	if rel == repoPath {
+		return false
+	}
+	return st.IsPathDenied(rel)
 }
 
 // profileExcluded reports whether a repo path (profiles/<name>/<rel>) matches

@@ -7,6 +7,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/colinc86/ccsync/internal/gitx"
+	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/sync"
 )
 
@@ -89,6 +90,52 @@ func (s *Scenario) NewMachine(name string) *Machine {
 // syncs. Fluent — returns the machine.
 func (m *Machine) UseProfile(name string) *Machine {
 	m.Profile = name
+	return m
+}
+
+// DenyPath adds a repo-relative path (under the active profile's prefix
+// — e.g. "claude/commands/work-only.md") to this machine's denylist.
+// Persists to state.json so the next Sync honors it.
+func (m *Machine) DenyPath(repoRelPath string) *Machine {
+	m.scenario.t.Helper()
+	st, err := state.Load(m.StateDir)
+	if err != nil {
+		m.scenario.t.Fatalf("load state: %v", err)
+	}
+	st.DenyPath(repoRelPath)
+	if err := state.Save(m.StateDir, st); err != nil {
+		m.scenario.t.Fatalf("save state: %v", err)
+	}
+	return m
+}
+
+// DenyMCPServer adds an mcpServers key to this machine's denylist.
+// Persists to state.json.
+func (m *Machine) DenyMCPServer(name string) *Machine {
+	m.scenario.t.Helper()
+	st, err := state.Load(m.StateDir)
+	if err != nil {
+		m.scenario.t.Fatalf("load state: %v", err)
+	}
+	st.DenyMCPServer(name)
+	if err := state.Save(m.StateDir, st); err != nil {
+		m.scenario.t.Fatalf("save state: %v", err)
+	}
+	return m
+}
+
+// SetPolicy mutates this machine's (category, direction) policy and
+// saves state. Fluent.
+func (m *Machine) SetPolicy(category string, dir state.Direction, policy string) *Machine {
+	m.scenario.t.Helper()
+	st, err := state.Load(m.StateDir)
+	if err != nil {
+		m.scenario.t.Fatalf("load state: %v", err)
+	}
+	st.SetPolicy(category, dir, policy)
+	if err := state.Save(m.StateDir, st); err != nil {
+		m.scenario.t.Fatalf("save state: %v", err)
+	}
 	return m
 }
 

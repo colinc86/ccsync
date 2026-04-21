@@ -15,6 +15,8 @@ type FileAction struct {
 	LocalAbs          string          // absolute path in user's ~/.claude or "" for .claude.json
 	Action            manifest.Action // Decide() output (before profile filtering)
 	ExcludedByProfile bool            // this path is filtered out by the active profile; treat as NoOp
+	ExcludedByDeny    bool            // this path is on this machine's per-user denylist
+	Category          string          // computed Claude Code category, e.g. "agents" / "mcp_servers"
 }
 
 // FileConflict bundles the per-file merge conflicts plus the raw bytes on

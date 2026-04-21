@@ -435,6 +435,35 @@ func TestScenarios(t *testing.T) {
 		}
 	})
 
+	// --- Per-machine denials ---
+
+	t.Run("denied_path_stays_off_repo", func(t *testing.T) {
+		// Machine a creates a command locally, denies it, then syncs.
+		// The command must stay on disk but never reach the repo — no
+		// DeleteRemote, no push, just silent skip. Proves DeniedPaths is
+		// wired into the sync engine like profile excludes.
+		s := harness.NewScenario(t)
+		a := s.NewMachine("a").
+			WriteClaudeFile("commands/work-only.md", "local-only").
+			DenyPath("claude/commands/work-only.md")
+		a.Sync()
+		s.AssertBareNoPath("profiles/default/claude/commands/work-only.md")
+		// The local file should still exist on disk.
+		if got, ok := a.ReadClaudeFile("commands/work-only.md"); !ok || got != "local-only" {
+			t.Errorf("local file should still exist: ok=%v, got=%q", ok, got)
+		}
+	})
+
+	t.Run("denied_path_blocks_pull_too", func(t *testing.T) {
+		// A pushes agents/shared.md. B denies that path before syncing.
+		// B's sync must not create the file locally.
+		s := harness.NewScenario(t)
+		s.NewMachine("a").WriteClaudeFile("agents/shared.md", "body").Sync()
+		b := s.NewMachine("b").DenyPath("claude/agents/shared.md")
+		b.Sync()
+		b.AssertNoClaudeFile("agents/shared.md")
+	})
+
 	// --- Auto behavior ---
 
 	t.Run("clean_sync_produces_no_commit", func(t *testing.T) {
