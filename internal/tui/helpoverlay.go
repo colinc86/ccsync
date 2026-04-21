@@ -43,8 +43,10 @@ var helpOverlayContent = []helpSection{
 	{
 		Title: "conflict resolver",
 		Rows: []helpRow{
-			{"l / r", "take local / remote"},
-			{"enter", "per-key picker (JSON)"},
+			{"1 / 2 / 3", "bulk: take remote / take local / manual"},
+			{"l / r", "(manual) take local / remote for cursored"},
+			{"enter", "(manual) per-key picker (JSON)"},
+			{"h", "(manual) per-hunk picker (text)"},
 			{"d", "diff local vs remote"},
 			{"a", "apply all resolutions"},
 		},
@@ -71,6 +73,8 @@ var helpOverlayContent = []helpSection{
 		Rows: []helpRow{
 			{"enter", "switch to profile"},
 			{"n", "new profile"},
+			{"e", "edit name + description"},
+			{"d", "delete (with confirm)"},
 		},
 	},
 }

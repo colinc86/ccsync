@@ -35,7 +35,9 @@ func (c resolutionChoice) symbol() string {
 
 // conflictResolverModel shows the list of conflicted files and lets the user
 // pick local or remote for each, then apply all. For JSON files, the user
-// can drill into per-key resolution via `k`.
+// can drill into per-key resolution via `k`. For most cases a user just
+// wants "take everything from this side" — a front-page bulk picker
+// handles that without forcing them through the detailed UI.
 type conflictResolverModel struct {
 	ctx       *AppContext
 	conflicts []sync.FileConflict
@@ -45,14 +47,21 @@ type conflictResolverModel struct {
 	applying  bool
 	err       error
 	result    *sync.Result
+
+	// strategyPending is true when the bulk picker should show before the
+	// detailed list. Flips to false either when the user picks "manual"
+	// (reveals the per-file picker) or when a bulk choice has been
+	// applied (we proceed directly to runApplyResolutions).
+	strategyPending bool
 }
 
 func newConflictResolver(ctx *AppContext, conflicts []sync.FileConflict) *conflictResolverModel {
 	return &conflictResolverModel{
-		ctx:       ctx,
-		conflicts: conflicts,
-		choices:   make([]resolutionChoice, len(conflicts)),
-		override:  map[int][]byte{},
+		ctx:             ctx,
+		conflicts:       conflicts,
+		choices:         make([]resolutionChoice, len(conflicts)),
+		override:        map[int][]byte{},
+		strategyPending: len(conflicts) > 0,
 	}
 }
 
@@ -91,6 +100,9 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Conflicts resolved and applied — user's done with this flow.
 			// Return to Home, not back to the Sync screen that pushed us.
 			return m, popToRoot()
+		}
+		if m.strategyPending {
+			return m.updateStrategy(msg)
 		}
 		switch msg.String() {
 		case "up", "k":
@@ -134,6 +146,74 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, switchTo(newDiffView(fc.Path, fc.LocalData, fc.RemoteData))
 			}
 		}
+	}
+	return m, nil
+}
+
+// renderStrategy shows the bulk picker as the first view when conflicts
+// exist. Most users — especially someone new who just hit a merge they
+// didn't expect — want a one-shot "just take their version" or "keep
+// mine" button. The manual path is one keystroke away for the 10% of
+// cases that need per-file control.
+func (m *conflictResolverModel) renderStrategy() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s %d file(s) diverged between local and the repo.\n\n",
+		theme.Bad.Render("!"), len(m.conflicts))
+
+	// Preview a few of them so the user knows what they're deciding on.
+	for i, fc := range m.conflicts {
+		if i >= 5 {
+			fmt.Fprintf(&sb, theme.Hint.Render("  … %d more\n"), len(m.conflicts)-5)
+			break
+		}
+		fmt.Fprintf(&sb, "  · %s\n", fc.Path)
+	}
+	sb.WriteString("\n" + theme.Heading.Render("how should we resolve?") + "\n\n")
+	fmt.Fprintf(&sb, "  %s  %s %s\n",
+		theme.Primary.Render("1"),
+		"replace local with cloud",
+		theme.Hint.Render("— take the repo's version for every file"))
+	fmt.Fprintf(&sb, "  %s  %s %s\n",
+		theme.Primary.Render("2"),
+		"replace cloud with local",
+		theme.Hint.Render("— push your ~/.claude version up as the winner"))
+	fmt.Fprintf(&sb, "  %s  %s %s\n",
+		theme.Primary.Render("3"),
+		"manual — pick per file",
+		theme.Hint.Render("— detailed picker with per-key JSON / per-hunk text"))
+	sb.WriteString("\n" + theme.Hint.Render("1-3 choose • esc cancel"))
+	return sb.String()
+}
+
+// updateStrategy handles the bulk front-page picker. Hitting "local" or
+// "remote" applies that choice to every conflict and dispatches the apply
+// immediately — the user doesn't have to walk the per-file picker just
+// to stamp the same answer N times. "manual" reveals the detailed view
+// that existed before this front page.
+func (m *conflictResolverModel) updateStrategy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "1", "r":
+		// Replace local with cloud — take remote for every conflict.
+		for i := range m.choices {
+			m.choices[i] = choiceRemote
+		}
+		m.strategyPending = false
+		m.applying = true
+		return m, runApplyResolutions(m.ctx, m.conflicts, m.choices, m.override)
+	case "2", "l":
+		// Replace cloud with local — take local for every conflict.
+		for i := range m.choices {
+			m.choices[i] = choiceLocal
+		}
+		m.strategyPending = false
+		m.applying = true
+		return m, runApplyResolutions(m.ctx, m.conflicts, m.choices, m.override)
+	case "3", "m":
+		// Manual — fall through to the per-file picker.
+		m.strategyPending = false
+		return m, nil
+	case "esc":
+		return m, popScreen()
 	}
 	return m, nil
 }
@@ -197,6 +277,9 @@ func (m *conflictResolverModel) View() string {
 		}
 		sb.WriteString("\n" + theme.Hint.Render("press any key to return"))
 		return sb.String()
+	}
+	if m.strategyPending {
+		return m.renderStrategy()
 	}
 
 	resolved := 0
