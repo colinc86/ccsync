@@ -52,6 +52,18 @@ func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 	case AuthNone:
 		return nil, nil
 	case AuthSSH:
+		// Prefer ssh-agent when available — it's what the user's shell
+		// `git clone` uses, so honoring the agent matches their existing
+		// setup on multi-key machines. File-based discovery can't read
+		// ~/.ssh/config for IdentityFile directives and will happily pick
+		// a key that doesn't match the remote (github will then reject
+		// with "no supported methods"). Only fall back to file-based when
+		// no agent is running. An explicit SSHKeyPath overrides both.
+		if c.SSHKeyPath == "" {
+			if agent, err := gitssh.NewSSHAgentAuth("git"); err == nil {
+				return agent, nil
+			}
+		}
 		keyPath := c.SSHKeyPath
 		if keyPath == "" {
 			p, err := DiscoverSSHKey()
@@ -63,9 +75,8 @@ func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 		pk, err := gitssh.NewPublicKeysFromFile("git", keyPath, c.SSHPassphrase)
 		if err != nil {
 			// Passphrase-protected keys without a cached passphrase fail
-			// here. Fall back to ssh-agent (typical macOS setup — Keychain
-			// feeds the passphrase into the agent on first use) before
-			// giving up.
+			// here. Last-ditch: re-try the agent even if SSHKeyPath was
+			// set, so a misconfigured setting doesn't lock the user out.
 			if agent, aerr := gitssh.NewSSHAgentAuth("git"); aerr == nil {
 				return agent, nil
 			}
