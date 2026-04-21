@@ -36,7 +36,7 @@ latest_tag() {
 }
 
 main() {
-  local tag os_name arch_name asset url tmp
+  local tag os_name arch_name asset url
   tag="${VERSION:-$(latest_tag)}"
   if [[ -z "$tag" ]]; then
     echo "couldn't resolve latest release tag" >&2
@@ -48,8 +48,11 @@ main() {
   asset="${BINARY}_${tag#v}_${os_name}_${arch_name}.tar.gz"
   url="https://github.com/$REPO/releases/download/$tag/$asset"
 
+  # tmp lives at file scope so the EXIT trap can see it even after main
+  # returns. The :- guard makes the trap safe if mktemp ever fails before
+  # assignment under set -u.
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  trap 'rm -rf "${tmp:-}"' EXIT
   echo "downloading: $url"
   curl -fsSL "$url" -o "$tmp/$asset"
   tar -C "$tmp" -xzf "$tmp/$asset"
