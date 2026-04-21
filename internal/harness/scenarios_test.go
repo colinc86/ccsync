@@ -7,10 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/colinc86/ccsync/internal/category"
 	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/harness"
 	"github.com/colinc86/ccsync/internal/secrets"
+	"github.com/colinc86/ccsync/internal/state"
+	"github.com/colinc86/ccsync/internal/sync"
 )
 
 // writeStringFile is a tiny helper for scenarios that poke directly at
@@ -435,6 +438,67 @@ func TestScenarios(t *testing.T) {
 		}
 	})
 
+	// --- Policies / partitioning ---
+
+	t.Run("partition_plan_routes_review_policy", func(t *testing.T) {
+		// commands=review on push; agents stays auto. A push of both an
+		// agent (auto) and a command (review) should partition
+		// accordingly; the review item is precisely what the TUI would
+		// hand to the review screen.
+		s := harness.NewScenario(t)
+		a := s.NewMachine("a").
+			SetPolicy(category.Commands, state.DirPush, state.PolicyReview).
+			WriteClaudeFile("agents/foo.md", "ag body").
+			WriteClaudeFile("commands/deploy.md", "cmd body")
+
+		plan := a.DryRun()
+		st, err := state.Load(a.StateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		part := sync.PartitionPlan(plan, st)
+
+		var autoHasAgent, reviewHasCmd bool
+		for _, act := range part.Auto {
+			if strings.HasSuffix(act.Path, "agents/foo.md") {
+				autoHasAgent = true
+			}
+		}
+		for _, act := range part.Review {
+			if strings.HasSuffix(act.Path, "commands/deploy.md") {
+				reviewHasCmd = true
+			}
+		}
+		if !autoHasAgent {
+			t.Errorf("expected agents/foo.md in Auto bucket; got %+v", part.Auto)
+		}
+		if !reviewHasCmd {
+			t.Errorf("expected commands/deploy.md in Review bucket; got %+v", part.Review)
+		}
+	})
+
+	t.Run("partition_plan_respects_never_policy", func(t *testing.T) {
+		// skills=never on push. A new skill locally should land in the
+		// Never bucket; no other action should sneak into Review.
+		s := harness.NewScenario(t)
+		a := s.NewMachine("a").
+			SetPolicy(category.Skills, state.DirPush, state.PolicyNever).
+			WriteClaudeFile("skills/test/SKILL.md", "skill body")
+
+		plan := a.DryRun()
+		st, _ := state.Load(a.StateDir)
+		part := sync.PartitionPlan(plan, st)
+		var neverHasSkill bool
+		for _, act := range part.Never {
+			if strings.HasSuffix(act.Path, "skills/test/SKILL.md") {
+				neverHasSkill = true
+			}
+		}
+		if !neverHasSkill {
+			t.Errorf("expected skills/test/SKILL.md in Never bucket; got %+v", part.Never)
+		}
+	})
+
 	// --- Per-machine denials ---
 
 	t.Run("denied_path_stays_off_repo", func(t *testing.T) {
@@ -451,6 +515,37 @@ func TestScenarios(t *testing.T) {
 		// The local file should still exist on disk.
 		if got, ok := a.ReadClaudeFile("commands/work-only.md"); !ok || got != "local-only" {
 			t.Errorf("local file should still exist: ok=%v, got=%q", ok, got)
+		}
+	})
+
+	t.Run("denied_mcp_server_preserves_local_when_remote_adds_new", func(t *testing.T) {
+		// Scoped version of the mcp-server-deny behavior: a pushes a new
+		// mcp server. b has its own (denied) mcp server locally and has
+		// not previously synced. After b pulls, b's local mcp server
+		// value is preserved thanks to PreserveLocalExcludes picking up
+		// DeniedMCPServers. The full deny-through-conflict case
+		// (concurrent edit of the same denied server key) lands in
+		// v0.5.1 once the merge engine is exclude-aware.
+		s := harness.NewScenario(t)
+		a := s.NewMachine("a").WriteClaudeJSON(`{
+			"mcpServers":{"shared":{"command":"a-val"}}
+		}`)
+		a.Sync()
+
+		// b has a local-only server it doesn't want pushed or overwritten.
+		b := s.NewMachine("b").WriteClaudeJSON(`{
+			"mcpServers":{"shared":{"command":"a-val"},"personal":{"command":"b-only"}}
+		}`).DenyMCPServer("personal")
+
+		// b pulls. `shared` stays; `personal` stays; nothing conflicts
+		// because the denied path never differs in the repo.
+		b.Sync()
+
+		got := b.ClaudeJSONMap()
+		mcp := got["mcpServers"].(map[string]any)
+		personal, _ := mcp["personal"].(map[string]any)
+		if personal["command"] != "b-only" {
+			t.Errorf("denied mcp server lost on local: %v", mcp)
 		}
 	})
 

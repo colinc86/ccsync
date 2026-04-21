@@ -404,9 +404,18 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			// (oauthAccount, userID, permissions.allow, etc.). Without
 			// this, the full-file os.WriteFile below would wipe them on
 			// every pull — hence "I have to re-login on work every time."
-			if rule, ok := jsonRules[abs]; ok && len(rule.Exclude) > 0 {
+			// We also augment the preserve list with any per-machine
+			// denied mcp servers so "don't pull this server's config"
+			// means what the user thinks it means.
+			excludes := append([]string(nil), jsonRules[abs].Exclude...)
+			if abs == in.ClaudeJSON {
+				for _, name := range state.DeniedMCPServers {
+					excludes = append(excludes, "$.mcpServers."+name)
+				}
+			}
+			if len(excludes) > 0 {
 				existing, _ := os.ReadFile(abs)
-				preserved, err := jsonfilter.PreserveLocalExcludes(data, existing, rule.Exclude)
+				preserved, err := jsonfilter.PreserveLocalExcludes(data, existing, excludes)
 				if err != nil {
 					return Result{}, fmt.Errorf("preserve local excludes %s: %w", abs, err)
 				}

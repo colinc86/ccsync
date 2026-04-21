@@ -194,6 +194,13 @@ func (m *settingsModel) buildRows() {
 			},
 		},
 		{
+			label: "review policies", kind: kindAction,
+			value: func() string { return theme.Hint.Render("per-category push/pull") },
+			run: func(m *settingsModel) tea.Cmd {
+				return switchTo(newPoliciesScreen(m.ctx))
+			},
+		},
+		{
 			label: "secrets backend", kind: kindRadio,
 			options: []string{"keychain", "file"},
 			value:   func() string { return currentSecretsLabel(ctx.State.SecretsBackend) },

@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/colinc86/ccsync/internal/category"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -28,6 +30,7 @@ type onboardingStep int
 
 const (
 	onboardWelcome   onboardingStep = iota
+	onboardPolicy                   // pick auto-sync vs review-each
 	onboardBootstrap                // hand off to bootstrapWizardModel
 	onboardDone
 )
@@ -68,6 +71,8 @@ func (m *onboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.step {
 		case onboardWelcome:
 			return m.updateWelcome(msg)
+		case onboardPolicy:
+			return m.updatePolicy(msg)
 		case onboardDone:
 			return m.finish()
 		}
@@ -78,10 +83,52 @@ func (m *onboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *onboardingModel) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		m.step = onboardBootstrap
-		return m, switchTo(newBootstrapWizard(m.ctx))
+		m.step = onboardPolicy
+		return m, nil
 	}
 	return m, nil
+}
+
+// updatePolicy handles the three-choice "how much control?" step.
+// '1' (auto) is the default / lowest friction. '2' (review pushes)
+// sets push=review for the user-content categories and leaves pulls
+// on auto — matches the "I want to review what LEAVES this machine"
+// mental model. '3' (review everything) sets push AND pull to review
+// across every user-content category.
+func (m *onboardingModel) updatePolicy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "1", "enter":
+		// Auto-sync everything (default). Nothing to set; empty policy
+		// resolves to auto via PolicyFor.
+	case "2":
+		applyReviewPreset(m.ctx.State, state.DirPush)
+	case "3":
+		applyReviewPreset(m.ctx.State, state.DirPush)
+		applyReviewPreset(m.ctx.State, state.DirPull)
+	default:
+		return m, nil
+	}
+	_ = state.Save(m.ctx.StateDir, m.ctx.State)
+	m.step = onboardBootstrap
+	return m, switchTo(newBootstrapWizard(m.ctx))
+}
+
+// applyReviewPreset flips the named categories to policy=review for
+// one direction. The list covers the user-content categories where
+// "review each" actually benefits the user; cache-ish categories
+// (other) stay on auto because the user has no mental model for them.
+func applyReviewPreset(st *state.State, dir state.Direction) {
+	for _, cat := range []string{
+		category.Agents,
+		category.Skills,
+		category.Commands,
+		category.Memory,
+		category.MCPServers,
+		category.ClaudeMD,
+		category.GeneralSettings,
+	} {
+		st.SetPolicy(cat, dir, state.PolicyReview)
+	}
 }
 
 // finish persists OnboardingComplete and either hands off to SyncPreview
@@ -109,6 +156,8 @@ func (m *onboardingModel) View() string {
 	switch m.step {
 	case onboardWelcome:
 		sb.WriteString(m.renderWelcome())
+	case onboardPolicy:
+		sb.WriteString(m.renderPolicy())
 	case onboardBootstrap:
 		// Delegated to the bootstrap wizard; rendered only during the
 		// transition window before it pushes onto the stack above us.
@@ -116,6 +165,27 @@ func (m *onboardingModel) View() string {
 	case onboardDone:
 		sb.WriteString(m.renderDone())
 	}
+	return sb.String()
+}
+
+func (m *onboardingModel) renderPolicy() string {
+	var sb strings.Builder
+	sb.WriteString(theme.Heading.Render("how hands-on do you want sync to be?") + "\n\n")
+	sb.WriteString(theme.Hint.Render(
+		"ccsync can sync silently in the background or pause on every push/pull\n"+
+			"to let you review each agent, skill, command, MCP server, etc. You\n"+
+			"can tweak per-category policies anytime from Settings → review policies.") + "\n\n")
+
+	fmt.Fprintf(&sb, "  %s  auto-sync everything %s\n",
+		theme.Primary.Render("1"),
+		theme.Hint.Render("(default — install, sync, forget)"))
+	fmt.Fprintf(&sb, "  %s  review each push before it leaves this machine %s\n",
+		theme.Primary.Render("2"),
+		theme.Hint.Render("(pulls stay silent)"))
+	fmt.Fprintf(&sb, "  %s  review every push AND pull %s\n",
+		theme.Primary.Render("3"),
+		theme.Hint.Render("(fully hands-on)"))
+	sb.WriteString("\n" + theme.Hint.Render("1/2/3 choose • enter = 1 (auto) • s skip"))
 	return sb.String()
 }
 

@@ -58,6 +58,18 @@ func runDryRun(ctx *AppContext) tea.Cmd {
 	}
 }
 
+// activeProfile returns the currently-active profile name, defaulting
+// to "default" when unset. Shared by buildSyncInputs and the review
+// screen wiring which both need the name to compose the
+// "profiles/<name>/" path prefix.
+func activeProfile(ctx *AppContext) string {
+	p := ctx.State.ActiveProfile
+	if p == "" {
+		return "default"
+	}
+	return p
+}
+
 func buildSyncInputs(ctx *AppContext, dryRun bool) (sync.Inputs, error) {
 	repoPath := filepath.Join(ctx.StateDir, "repo")
 	profile := ctx.State.ActiveProfile
@@ -131,8 +143,14 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// off so the user catches a glimpse of what's happening. In
 		// manual mode, keep the stricter AutoApplyClean opt-in (only
 		// apply when the plan is entirely empty) so explicit review is
-		// still the default. Conflicts never auto-apply either way.
+		// still the default. Conflicts never auto-apply either way. If
+		// any category's policy is "review", the review screen gates
+		// the actual sync regardless of auto/manual.
 		if m.err == nil && len(m.plan.Conflicts) == 0 {
+			part := sync.PartitionPlan(m.plan, m.ctx.State)
+			if len(part.Review) > 0 {
+				return m, switchTo(newReviewScreen(m.ctx, part.Review, "profiles/"+activeProfile(m.ctx)+"/"))
+			}
 			if m.ctx.State.IsAutoMode() ||
 				(m.ctx.State.AutoApplyClean && m.planIsClean()) {
 				return m, switchTo(newSync(m.ctx))
@@ -143,6 +161,10 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			if !m.loading && m.err == nil {
+				part := sync.PartitionPlan(m.plan, m.ctx.State)
+				if len(part.Review) > 0 {
+					return m, switchTo(newReviewScreen(m.ctx, part.Review, "profiles/"+activeProfile(m.ctx)+"/"))
+				}
 				return m, switchTo(newSync(m.ctx))
 			}
 		case "up", "k":
