@@ -5,6 +5,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -102,13 +103,22 @@ func NewContext() (*AppContext, error) {
 	secrets.SetBackend(string(st.SecretsBackend))
 
 	hostName, _ := os.Hostname()
+	gitName, gitEmail := resolveGitAuthor()
 	authorName := st.AuthorName
 	if authorName == "" {
-		authorName = hostName
+		if gitName != "" {
+			authorName = gitName
+		} else {
+			authorName = hostName
+		}
 	}
 	authorEmail := st.AuthorEmail
 	if authorEmail == "" {
-		authorEmail = hostName + "@ccsync.local"
+		if gitEmail != "" {
+			authorEmail = gitEmail
+		} else {
+			authorEmail = hostName + "@ccsync.local"
+		}
 	}
 	return &AppContext{
 		Config:     cfg,
@@ -128,6 +138,25 @@ func loadOrDefaultConfig(repoPath string) (*config.Config, error) {
 		return config.Load(p)
 	}
 	return config.LoadDefault()
+}
+
+// resolveGitAuthor reads user.name / user.email from the global git config
+// as a source for author identity when state.json has no override. Used
+// by NewContext so onboarding can skip the identity step: if the user has
+// a reasonable global git config (which anyone who's made a commit
+// anywhere has), we don't pester them to set it again for ccsync commits.
+//
+// Best-effort — any error short-circuits to "" and NewContext falls back
+// to hostname-derived defaults. Running `git config` without a git
+// install returns exec.ErrNotFound, which we silently swallow.
+func resolveGitAuthor() (name, email string) {
+	if out, err := exec.Command("git", "config", "--global", "--get", "user.name").Output(); err == nil {
+		name = strings.TrimSpace(string(out))
+	}
+	if out, err := exec.Command("git", "config", "--global", "--get", "user.email").Output(); err == nil {
+		email = strings.TrimSpace(string(out))
+	}
+	return
 }
 
 type screen interface {

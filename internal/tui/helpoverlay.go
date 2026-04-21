@@ -24,10 +24,12 @@ var helpOverlayContent = []helpSection{
 		},
 	},
 	{
-		Title: "home",
+		Title: "home dashboard",
 		Rows: []helpRow{
-			{"1-9", "jump to menu item"},
-			{"r", "refresh sync status now"},
+			{"enter", "sync now (or start setup)"},
+			{"m", "more — profiles, history, settings, …"},
+			{"r", "re-check remote now"},
+			{"q", "quit"},
 		},
 	},
 	{

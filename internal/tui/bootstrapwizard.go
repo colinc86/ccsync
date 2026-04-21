@@ -16,7 +16,9 @@ import (
 
 // bootstrapWizardModel walks a fresh user through picking a sync repo and
 // writing state.json. v1 only supports SSH auth from the TUI; HTTPS users
-// can fall back to `ccsync bootstrap --auth https`.
+// can fall back to `ccsync bootstrap --auth https`. The profile name is
+// always "default" here — users who want a second profile create it from
+// the Profiles screen after bootstrap.
 type bootstrapWizardModel struct {
 	ctx  *AppContext
 	step wizStep
@@ -24,9 +26,8 @@ type bootstrapWizardModel struct {
 	sourceCursor int
 	sourceKind   bootstrap.Source
 
-	urlInput     textinput.Model
-	profileInput textinput.Model
-	spin         spinner.Model
+	urlInput textinput.Model
+	spin     spinner.Model
 
 	running bool
 	err     error
@@ -38,7 +39,6 @@ type wizStep int
 const (
 	stepSource wizStep = iota
 	stepURL
-	stepProfile
 	stepConfirm
 	stepDone
 )
@@ -55,17 +55,10 @@ func newBootstrapWizard(ctx *AppContext) *bootstrapWizardModel {
 	urlInput.Width = 48
 	urlInput.Focus()
 
-	profileInput := textinput.New()
-	profileInput.Placeholder = "default"
-	profileInput.SetValue("default")
-	profileInput.CharLimit = 32
-	profileInput.Width = 24
-
 	return &bootstrapWizardModel{
-		ctx:          ctx,
-		urlInput:     urlInput,
-		profileInput: profileInput,
-		spin:         newSpinner(),
+		ctx:      ctx,
+		urlInput: urlInput,
+		spin:     newSpinner(),
 	}
 }
 
@@ -103,8 +96,6 @@ func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSource(msg)
 		case stepURL:
 			return m.updateURL(msg)
-		case stepProfile:
-			return m.updateProfile(msg)
 		case stepConfirm:
 			return m.updateConfirm(msg)
 		case stepDone:
@@ -166,28 +157,12 @@ func (m *bootstrapWizardModel) updateURL(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(m.urlInput.Value()) == "" {
 			return m, nil
 		}
-		m.step = stepProfile
-		m.urlInput.Blur()
-		m.profileInput.Focus()
-		return m, textinput.Blink
-	}
-	var cmd tea.Cmd
-	m.urlInput, cmd = m.urlInput.Update(msg)
-	return m, cmd
-}
-
-func (m *bootstrapWizardModel) updateProfile(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
-		if strings.TrimSpace(m.profileInput.Value()) == "" {
-			m.profileInput.SetValue("default")
-		}
 		m.step = stepConfirm
-		m.profileInput.Blur()
+		m.urlInput.Blur()
 		return m, nil
 	}
 	var cmd tea.Cmd
-	m.profileInput, cmd = m.profileInput.Update(msg)
+	m.urlInput, cmd = m.urlInput.Update(msg)
 	return m, cmd
 }
 
@@ -196,12 +171,12 @@ func (m *bootstrapWizardModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	case "enter":
 		m.running = true
 		return m, tea.Batch(
-			runBootstrap(m.ctx, m.sourceKind, m.urlInput.Value(), m.profileInput.Value()),
+			runBootstrap(m.ctx, m.sourceKind, m.urlInput.Value(), "default"),
 			m.spin.Tick,
 		)
 	case "b":
-		m.step = stepProfile
-		m.profileInput.Focus()
+		m.step = stepURL
+		m.urlInput.Focus()
 		return m, textinput.Blink
 	}
 	return m, nil
@@ -255,18 +230,13 @@ func (m *bootstrapWizardModel) View() string {
 		sb.WriteString(theme.Secondary.Render(label+":") + " " + m.urlInput.View())
 		sb.WriteString("\n\n" + theme.Hint.Render("enter next • esc back"))
 
-	case stepProfile:
-		sb.WriteString(theme.Secondary.Render("initial profile:") + " " + m.profileInput.View())
-		sb.WriteString("\n\n" + theme.Hint.Render("enter next • esc back"))
-
 	case stepConfirm:
 		sb.WriteString(theme.Heading.Render("confirm") + "\n\n")
 		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("source:"), m.sourceSummary())
 		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("target:"), m.urlInput.Value())
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("profile:"), m.profileInput.Value())
 		fmt.Fprintf(&sb, "  %s  ssh (auto-detect ~/.ssh/id_*)\n", theme.Secondary.Render("auth:"))
 		sb.WriteString("\n" + theme.Primary.Render("enter ") + "apply • " +
-			theme.Hint.Render("b edit profile • esc cancel"))
+			theme.Hint.Render("b edit URL • esc cancel"))
 
 	case stepDone:
 		if m.err != nil {
