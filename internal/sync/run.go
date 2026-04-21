@@ -73,6 +73,17 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		if err := repo.Fetch(ctx, in.Auth); err != nil {
 			return Result{}, fmt.Errorf("fetch: %w", err)
 		}
+		// Advance local HEAD + worktree to whatever the remote says. Our
+		// reconciliation is a file-level three-way merge, not a git-level
+		// merge — leaving local HEAD at a stale commit makes the push
+		// non-fast-forward once the remote has moved, even though we've
+		// already reconciled the file content. Reset is safe because any
+		// unpushed local commit from a previous failed sync is orphaned,
+		// not something we want to preserve (the files it references live
+		// in ~/.claude and will be re-detected in the next merge pass).
+		if err := repo.SyncToRemote(); err != nil {
+			return Result{}, fmt.Errorf("align with remote: %w", err)
+		}
 	}
 
 	manifestPath := filepath.Join(in.RepoPath, "manifest.json")

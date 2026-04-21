@@ -179,6 +179,45 @@ func (r *Repo) Fetch(ctx context.Context, auth transport.AuthMethod) error {
 	return Translate(err)
 }
 
+// SyncToRemote hard-resets the local branch + worktree to origin/<branch>
+// so any subsequent commit is parented at the real remote tip. ccsync's
+// reconciliation happens at the file level via a three-way merge, so
+// there's nothing to preserve from the stale local commit history — if we
+// left local HEAD behind, the commit we build would be a non-fast-forward
+// push and the remote would reject it. No-op when the repo is empty or
+// the remote branch doesn't exist yet (first push).
+func (r *Repo) SyncToRemote() error {
+	head, err := r.repo.Head()
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil
+		}
+		return Translate(err)
+	}
+	branch := head.Name().Short()
+	if branch == "" {
+		return nil
+	}
+	remoteRef, err := r.repo.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil // remote branch not published yet
+		}
+		return Translate(err)
+	}
+	if remoteRef.Hash() == head.Hash() {
+		return nil // already in sync
+	}
+	wt, err := r.repo.Worktree()
+	if err != nil {
+		return Translate(err)
+	}
+	return Translate(wt.Reset(&git.ResetOptions{
+		Mode:   git.HardReset,
+		Commit: remoteRef.Hash(),
+	}))
+}
+
 // AddAll stages every change in the working tree.
 func (r *Repo) AddAll() error {
 	wt, err := r.repo.Worktree()
