@@ -230,6 +230,64 @@ func TestSelectiveSyncOnlyAppliesListedPaths(t *testing.T) {
 	}
 }
 
+func TestProfileExtendsInheritsContent(t *testing.T) {
+	secrets.MockInit()
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.LoadDefault()
+	cfg.Profiles["work"] = config.ProfileSpec{
+		Description: "work laptop",
+		Extends:     "default",
+	}
+
+	// Machine A on profile=default pushes an agent + a skill.
+	homeA := filepath.Join(tmp, "homeA")
+	repoA := filepath.Join(tmp, "repoA")
+	stateA := filepath.Join(tmp, "stateA")
+	seedMachine(t, homeA) // creates claude/agents/foo.md
+	if _, err := gitx.Init(repoA, bareDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), machineInputs(homeA, repoA, stateA, cfg), nil); err != nil {
+		t.Fatalf("machine A push: %v", err)
+	}
+
+	// Inspect what landed in the bare repo — should be under
+	// profiles/default/, NOT profiles/work/.
+	inspect := filepath.Join(tmp, "inspect")
+	if _, err := gogit.PlainClone(inspect, false, &gogit.CloneOptions{URL: bareDir}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(inspect, "profiles/default/claude/agents/foo.md")); err != nil {
+		t.Fatalf("expected agent under profiles/default/: %v", err)
+	}
+
+	// Machine B on profile=work clones and syncs. With extends wired up,
+	// the agent should materialize under homeB/.claude even though work
+	// never pushed anything.
+	homeB := filepath.Join(tmp, "homeB")
+	repoB := filepath.Join(tmp, "repoB")
+	stateB := filepath.Join(tmp, "stateB")
+	if err := os.MkdirAll(filepath.Join(homeB, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Clone(context.Background(), bareDir, repoB, nil); err != nil {
+		t.Fatal(err)
+	}
+	inB := machineInputs(homeB, repoB, stateB, cfg)
+	inB.Profile = "work"
+	if _, err := Run(context.Background(), inB, nil); err != nil {
+		t.Fatalf("machine B (work) pull: %v", err)
+	}
+	// The inherited agent should have landed in B's ~/.claude.
+	if got, err := os.ReadFile(filepath.Join(homeB, ".claude/agents/foo.md")); err != nil || string(got) != "agent body" {
+		t.Errorf("inherited agent not on work machine: got=%q err=%v", got, err)
+	}
+}
+
 func TestProfileExcludeBlocksPushAndPull(t *testing.T) {
 	secrets.MockInit()
 	tmp := t.TempDir()

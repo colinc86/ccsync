@@ -161,19 +161,29 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 
 	remoteEntries := map[string][]byte{}
 	if !empty {
-		entries, err := readProfileTreeFromWorktree(in.RepoPath, profilePrefix)
-		if err != nil {
-			return Result{}, err
-		}
-		// Decrypt any files that were stored encrypted.
-		for p, data := range entries {
-			if plain, err := maybeDecrypt(encKey, data); err != nil {
-				return Result{}, fmt.Errorf("decrypt %s: %w", p, err)
-			} else {
-				entries[p] = plain
+		// Walk the extends chain parent-first so leaf profile entries
+		// overwrite ancestor entries for the same path. Ancestor files
+		// get projected into the leaf's namespace (profiles/<leaf>/...)
+		// so the rest of the sync engine stays inheritance-unaware.
+		// Example: with resolvedProfile.Chain = ["work", "default"],
+		// "profiles/default/claude/agents/foo.md" shows up downstream as
+		// "profiles/work/claude/agents/foo.md".
+		for i := len(resolvedProfile.Chain) - 1; i >= 0; i-- {
+			ancestorPrefix := "profiles/" + resolvedProfile.Chain[i] + "/"
+			entries, err := readProfileTreeFromWorktree(in.RepoPath, ancestorPrefix)
+			if err != nil {
+				return Result{}, err
+			}
+			for p, data := range entries {
+				plain, err := maybeDecrypt(encKey, data)
+				if err != nil {
+					return Result{}, fmt.Errorf("decrypt %s: %w", p, err)
+				}
+				rel := strings.TrimPrefix(p, ancestorPrefix)
+				childPath := profilePrefix + rel
+				remoteEntries[childPath] = plain
 			}
 		}
-		remoteEntries = entries
 	}
 
 	allPaths := map[string]struct{}{}
@@ -183,14 +193,21 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 	for p := range remoteEntries {
 		allPaths[p] = struct{}{}
 	}
-	// Also consider files that were in our base commit but may now be deleted
-	// on one or both sides.
+	// Also consider files that were in our base commit but may now be
+	// deleted on one or both sides. Scan under every profile in the
+	// resolved chain (not just the leaf) and project ancestor paths into
+	// the child namespace so delete-detection works for inherited files.
 	if baseCommit != "" {
 		baseFiles, err := repo.FilesAtCommit(baseCommit)
 		if err == nil {
 			for _, p := range baseFiles {
-				if strings.HasPrefix(p, profilePrefix) {
-					allPaths[p] = struct{}{}
+				for _, name := range resolvedProfile.Chain {
+					ancestorPrefix := "profiles/" + name + "/"
+					if strings.HasPrefix(p, ancestorPrefix) {
+						rel := strings.TrimPrefix(p, ancestorPrefix)
+						allPaths[profilePrefix+rel] = struct{}{}
+						break
+					}
 				}
 			}
 		}
@@ -211,8 +228,22 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			localAbs = le.abs
 		}
 		if baseCommit != "" {
-			if data, ok, _ := repo.BlobAtCommit(baseCommit, path); ok {
-				baseSHA = manifest.SHA256Bytes(data)
+			// For inherited paths (file actually lives under an ancestor
+			// profile's prefix in the commit tree), the child-path lookup
+			// misses. Walk the chain — child first, then ancestors — so
+			// baseSHA reflects the same inheritance projection we just
+			// applied to remoteEntries. Without this, a file that's been
+			// inherited from default looks "brand new" to the child and
+			// every sync wants to re-add it.
+			for i, name := range resolvedProfile.Chain {
+				probe := path
+				if i > 0 {
+					probe = strings.Replace(path, profilePrefix, "profiles/"+name+"/", 1)
+				}
+				if data, ok, _ := repo.BlobAtCommit(baseCommit, probe); ok {
+					baseSHA = manifest.SHA256Bytes(data)
+					break
+				}
 			}
 		}
 		if data, ok := remoteEntries[path]; ok {
