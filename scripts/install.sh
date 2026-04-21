@@ -30,31 +30,103 @@ arch() {
   esac
 }
 
+# auth_header echoes a curl -H value ("Authorization: Bearer …") when a
+# token is available, empty otherwise. Private-fork installs work by
+# piggybacking on whatever auth the user already has set up: GH_TOKEN,
+# GITHUB_TOKEN, or the GitHub CLI. Public repos need none of this.
+auth_header() {
+  local tok=""
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    tok="$GH_TOKEN"
+  elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    tok="$GITHUB_TOKEN"
+  elif command -v gh >/dev/null 2>&1; then
+    tok="$(gh auth token 2>/dev/null || true)"
+  fi
+  if [[ -n "$tok" ]]; then
+    echo "Authorization: Bearer $tok"
+  fi
+}
+
 latest_tag() {
-  curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | awk -F'"' '/"tag_name":/ {print $4; exit}'
+  local auth; auth="$(auth_header)"
+  local body
+  if [[ -n "$auth" ]]; then
+    body="$(curl -fsSL -H "$auth" "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
+  else
+    body="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
+  fi
+  # Retry with auth if the unauthenticated call returned nothing — covers
+  # the private-repo case where the first curl 404'd.
+  if [[ -z "$body" && -n "$auth" ]]; then
+    body="$(curl -fsSL -H "$auth" "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$body" | awk -F'"' '/"tag_name":/ {print $4; exit}'
+}
+
+# download_asset streams the asset bytes to stdout. Tries the public
+# /releases/download URL first, falls back to the authenticated
+# /releases/assets/<id> endpoint when that 404s. Requires jq OR python3
+# to parse the asset listing on the private path.
+download_asset() {
+  local tag="$1" asset="$2" out="$3"
+  local direct="https://github.com/$REPO/releases/download/$tag/$asset"
+  if curl -fsSL "$direct" -o "$out" 2>/dev/null; then
+    return 0
+  fi
+  local auth; auth="$(auth_header)"
+  if [[ -z "$auth" ]]; then
+    echo "error: asset not publicly downloadable." >&2
+    echo "       set GITHUB_TOKEN or run \`gh auth login\` and retry." >&2
+    return 1
+  fi
+  # Resolve asset id from the tag metadata.
+  local meta
+  meta="$(curl -fsSL -H "$auth" -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$REPO/releases/tags/$tag")"
+  local id
+  if command -v jq >/dev/null 2>&1; then
+    id="$(printf '%s' "$meta" | jq -r ".assets[] | select(.name == \"$asset\") | .id")"
+  elif command -v python3 >/dev/null 2>&1; then
+    id="$(printf '%s' "$meta" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for a in data.get('assets', []):
+    if a.get('name') == '$asset':
+        print(a.get('id'))
+        break")"
+  else
+    echo "error: need jq or python3 to parse private-repo asset metadata." >&2
+    return 1
+  fi
+  if [[ -z "$id" ]]; then
+    echo "error: asset $asset not found in release $tag." >&2
+    return 1
+  fi
+  curl -fsSL -H "$auth" -H "Accept: application/octet-stream" \
+    "https://api.github.com/repos/$REPO/releases/assets/$id" -o "$out"
 }
 
 main() {
-  local tag os_name arch_name asset url
+  local tag os_name arch_name asset
   tag="${VERSION:-$(latest_tag)}"
   if [[ -z "$tag" ]]; then
     echo "couldn't resolve latest release tag" >&2
+    echo "if $REPO is private, set GITHUB_TOKEN or run \`gh auth login\` first." >&2
     exit 1
   fi
   [[ "$tag" == v* ]] || tag="v$tag"
   os_name="$(os)"
   arch_name="$(arch)"
   asset="${BINARY}_${tag#v}_${os_name}_${arch_name}.tar.gz"
-  url="https://github.com/$REPO/releases/download/$tag/$asset"
 
   # tmp lives at file scope so the EXIT trap can see it even after main
   # returns. The :- guard makes the trap safe if mktemp ever fails before
   # assignment under set -u.
   tmp="$(mktemp -d)"
   trap 'rm -rf "${tmp:-}"' EXIT
-  echo "downloading: $url"
-  curl -fsSL "$url" -o "$tmp/$asset"
+  echo "downloading: $asset ($tag)"
+  download_asset "$tag" "$asset" "$tmp/$asset"
   tar -C "$tmp" -xzf "$tmp/$asset"
   mkdir -p "$INSTALL_DIR"
   mv "$tmp/$BINARY" "$INSTALL_DIR/$BINARY"
