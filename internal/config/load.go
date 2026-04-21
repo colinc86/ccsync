@@ -25,14 +25,31 @@ func LoadDefault() (*Config, error) {
 
 // Parse decodes YAML bytes into a Config and validates it.
 func Parse(data []byte) (*Config, error) {
+	if len(data) == 0 {
+		return nil, errors.New("ccsync.yaml is empty")
+	}
 	var c Config
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse ccsync.yaml: %w", err)
 	}
+	c.normalize()
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// normalize cleans up zero-value shapes that yaml would otherwise round-
+// trip as clutter — most importantly empty ProfileExclude pointers that
+// serialize as `exclude: {}` even with omitempty (yaml's omitempty
+// doesn't recurse into non-nil pointers).
+func (c *Config) normalize() {
+	for name, spec := range c.Profiles {
+		if spec.Exclude != nil && len(spec.Exclude.Paths) == 0 {
+			spec.Exclude = nil
+			c.Profiles[name] = spec
+		}
+	}
 }
 
 func (c *Config) validate() error {

@@ -370,44 +370,49 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		}
 	}
 
-	// Refresh README.md so a human browsing the repo sees current state.
-	profiles := listProfilesFromRepo(in.RepoPath)
-	_ = writeRepoREADME(in.RepoPath, profiles, state, in.HostName)
-
-	now := time.Now().UTC()
-	for path, data := range pendingRepoWrites {
-		if data == nil {
-			mf.Delete(path)
-		} else {
-			mf.Set(path, manifest.Entry{
-				SHA256: manifest.SHA256Bytes(data), Size: int64(len(data)),
-				MTime: now, LastModifiedBy: in.HostUUID,
-			})
-		}
-	}
-	mf.UpdatedBy = in.HostUUID
-	if err := mf.Save(manifestPath); err != nil {
-		return Result{}, err
-	}
-
+	// README + manifest only get rewritten when something real happened to
+	// the repo side. Without this gate, time.Now()-carrying writes made
+	// every sync "dirty", produced a no-op commit, and pushed it — the
+	// user's git history filled with syncs that changed nothing.
 	var commitSHA string
-	hasChanges, err := repo.HasChanges()
-	if err != nil {
-		return Result{}, err
-	}
-	if hasChanges {
-		emit("commit", "committing", "")
-		if err := repo.AddAll(); err != nil {
+	if len(pendingRepoWrites) > 0 {
+		profiles := listProfilesFromRepo(in.RepoPath)
+		_ = writeRepoREADME(in.RepoPath, profiles, state, in.HostName)
+
+		now := time.Now().UTC()
+		for path, data := range pendingRepoWrites {
+			if data == nil {
+				mf.Delete(path)
+			} else {
+				mf.Set(path, manifest.Entry{
+					SHA256: manifest.SHA256Bytes(data), Size: int64(len(data)),
+					MTime: now, LastModifiedBy: in.HostUUID,
+				})
+			}
+		}
+		mf.UpdatedBy = in.HostUUID
+		if err := mf.Save(manifestPath); err != nil {
 			return Result{}, err
 		}
-		msg := commitMessage(in.Profile, in.HostName, plan, remoteEntries, pendingRepoWrites)
-		commitSHA, err = repo.Commit(msg, in.HostName, in.AuthorEmail)
+
+		hasChanges, err := repo.HasChanges()
 		if err != nil {
 			return Result{}, err
 		}
-		emit("push", "pushing to remote", "")
-		if err := repo.Push(ctx, in.Auth); err != nil {
-			return Result{}, err
+		if hasChanges {
+			emit("commit", "committing", "")
+			if err := repo.AddAll(); err != nil {
+				return Result{}, err
+			}
+			msg := commitMessage(in.Profile, in.HostName, plan, remoteEntries, pendingRepoWrites)
+			commitSHA, err = repo.Commit(msg, in.HostName, in.AuthorEmail)
+			if err != nil {
+				return Result{}, err
+			}
+			emit("push", "pushing to remote", "")
+			if err := repo.Push(ctx, in.Auth); err != nil {
+				return Result{}, err
+			}
 		}
 	}
 

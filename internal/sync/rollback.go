@@ -154,7 +154,14 @@ func RollbackTo(ctx context.Context, in Inputs, targetCommitSHA string) (Result,
 		return Result{}, err
 	}
 	if err := repo.Push(ctx, in.Auth); err != nil {
-		return Result{}, err
+		// Push failed after commit — state.LastSyncedSHA would otherwise
+		// advance to an orphaned local commit that nobody else can see.
+		// Return the push error verbatim so the user knows to retry once
+		// the remote-side issue is sorted (e.g. another machine just
+		// pushed, get-to-remote on next sync will recover automatically
+		// via SyncToRemote hard-reset).
+		return Result{}, fmt.Errorf("rollback push failed (local commit %s is orphan, "+
+			"next sync will reset and can retry): %w", commitSHA[:7], err)
 	}
 
 	// Update last-synced pointer to the new commit (not the rollback target).

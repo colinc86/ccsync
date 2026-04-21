@@ -42,7 +42,7 @@ func commitMessage(profile, host string, plan Plan, pre, post map[string][]byte)
 
 	for _, p := range paths {
 		a := byPath[p]
-		label := semanticLabel(p, pre[p], post[p])
+		label := SemanticLabel(p, pre[p], post[p])
 		switch a.Action {
 		case manifest.ActionAddRemote:
 			addedEntries = append(addedEntries, label)
@@ -75,7 +75,7 @@ func commitMessage(profile, host string, plan Plan, pre, post map[string][]byte)
 	return strings.TrimRight(buf.String(), "\n")
 }
 
-// semanticLabel turns a repo-relative path into a readable label. Falls
+// SemanticLabel turns a repo-relative path into a readable label. Falls
 // back to the bare path when it doesn't match a recognized shape.
 //
 // Examples:
@@ -84,7 +84,7 @@ func commitMessage(profile, host string, plan Plan, pre, post map[string][]byte)
 //   profiles/default/claude/commands/status.md → "command: status"
 //   profiles/default/CLAUDE.md → "CLAUDE.md"
 //   profiles/default/claude.json → "claude.json: mcpServers.gemini, theme"
-func semanticLabel(repoPath string, pre, post []byte) string {
+func SemanticLabel(repoPath string, pre, post []byte) string {
 	rel := stripProfilePrefix(repoPath)
 	switch {
 	case rel == "claude.json":

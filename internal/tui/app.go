@@ -50,11 +50,15 @@ type AppContext struct {
 	// Update-check cache. Populated by the background checker; read by
 	// Settings to show availability inline. LatestVersion is the tag
 	// string ("v0.4.0"); UpdateAvailable is true iff it differs from the
-	// running binary's version.
-	LatestVersion   string
-	UpdateAvailable bool
-	UpdateCheckedAt time.Time
-	UpdateCheckErr  error
+	// running binary's version. UpdateInstalling is an in-flight latch so
+	// a second fetch tick can't race-dispatch a concurrent install under
+	// auto mode (os.Rename over a running binary is safe; two Renames at
+	// once aren't).
+	LatestVersion    string
+	UpdateAvailable  bool
+	UpdateCheckedAt  time.Time
+	UpdateCheckErr   error
+	UpdateInstalling bool
 }
 
 // ConfigPath returns the on-disk ccsync.yaml path. Before bootstrap, an
@@ -146,14 +150,33 @@ type AppModel struct {
 	screens []screen
 	width   int
 	height  int
+	help    bool // `?` overlay visible
 }
 
-// New constructs the root model pre-populated with the Home screen.
+// New constructs the root model. First-run users (no sync repo and the
+// onboarding wizard hasn't been dismissed) land on the onboarding flow
+// on top of Home; everyone else lands straight on Home.
 func New(ctx *AppContext) AppModel {
-	return AppModel{
-		ctx:     ctx,
-		screens: []screen{newHome(ctx)},
+	screens := []screen{newHome(ctx)}
+	if needsOnboarding(ctx) {
+		screens = append(screens, newOnboarding(ctx))
 	}
+	return AppModel{ctx: ctx, screens: screens}
+}
+
+// needsOnboarding returns true when the wizard should be shown at launch.
+// Existing users with a bootstrapped repo skip regardless of flag value
+// (the flag is new in v0.2 and backfills false) — we detect "new user"
+// via SyncRepoURL==""; the flag then stops the nag after the first run
+// completes, even on a machine that never completed bootstrap.
+func needsOnboarding(ctx *AppContext) bool {
+	if ctx == nil || ctx.State == nil {
+		return false
+	}
+	if ctx.State.SyncRepoURL != "" {
+		return false
+	}
+	return !ctx.State.OnboardingComplete
 }
 
 // Init satisfies tea.Model. Kicks off the first status refresh, schedules
@@ -189,6 +212,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
+		// While the help overlay is visible, any key dismisses it — we
+		// intentionally don't let the top screen see the keystroke so the
+		// user's "press anything to close this" expectation holds.
+		if m.help {
+			m.help = false
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -196,6 +226,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.screens) == 1 {
 				return m, tea.Quit
 			}
+		case "?":
+			// Capture `?` globally. Screens that want to own `?` for
+			// themselves (BrowseTracked uses it for "why") should bind
+			// their own handler BEFORE we get here — but AppModel sees
+			// keys first, so instead BrowseTracked rebinds to a
+			// different key. We accept that global `?` wins.
+			m.help = true
+			return m, nil
 		case "esc":
 			// If the top screen captures escape (e.g. Settings while editing
 			// a field), let it consume the key instead of popping the stack.
@@ -218,6 +256,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case popScreenMsg:
 		if len(m.screens) > 1 {
 			m.screens = m.screens[:len(m.screens)-1]
+		}
+		return m, nil
+	case popToRootMsg:
+		if len(m.screens) > 1 {
+			m.screens = m.screens[:1]
 		}
 		return m, nil
 
@@ -256,6 +299,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// running process keeps its inode of the old binary (Unix inode
 		// semantics); the next launch picks up the new version. Clear
 		// the pending flag so the Settings row stops showing "available".
+		// Either way, release the in-flight latch so a future tick can
+		// retry (e.g. if install failed on a permission error that gets
+		// cleared later).
+		m.ctx.UpdateInstalling = false
 		if msg.err == nil {
 			m.ctx.UpdateAvailable = false
 		}
@@ -285,8 +332,11 @@ func (m AppModel) View() string {
 	top := m.screens[len(m.screens)-1]
 	header := renderBreadcrumbs(m.screens)
 	status := statusBar(m.ctx)
-	footer := theme.Hint.Render(navigationHint(m.screens))
+	footer := theme.Hint.Render(navigationHint(m.screens) + " • ? help")
 	body := top.View()
+	if m.help {
+		body = renderHelpOverlay()
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", status, footer)
 }
 
@@ -332,4 +382,14 @@ type popScreenMsg struct{}
 
 func popScreen() tea.Cmd {
 	return func() tea.Msg { return popScreenMsg{} }
+}
+
+// popToRootMsg truncates the screen stack down to just the Home frame.
+// Used by terminal "press any key to return" screens whose copy would
+// otherwise lie — users in Home → SyncPreview → Sync → done had to press
+// esc three times when the footer said "return to home".
+type popToRootMsg struct{}
+
+func popToRoot() tea.Cmd {
+	return func() tea.Msg { return popToRootMsg{} }
 }

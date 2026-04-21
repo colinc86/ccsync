@@ -20,9 +20,9 @@ func TestSemanticLabel(t *testing.T) {
 		{"profiles/default/claude/other/thing.md", "claude/other/thing.md"},
 	}
 	for _, c := range cases {
-		got := semanticLabel(c.in, nil, nil)
+		got := SemanticLabel(c.in, nil, nil)
 		if got != c.want {
-			t.Errorf("semanticLabel(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("SemanticLabel(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/colinc86/ccsync/internal/manifest"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -122,7 +123,9 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, switchTo(newRedactionReview(m.ctx, m.result.MissingSecrets))
 			}
 		default:
-			return m, popScreen()
+			// Sync is the end of a Home → SyncPreview → Sync chain. The
+			// footer says "return to home" — actually do that.
+			return m, popToRoot()
 		}
 	}
 	return m, nil
@@ -156,6 +159,12 @@ func (m *syncModel) View() string {
 				short = short[:7]
 			}
 			sb.WriteString(theme.Good.Render("committed ") + short + "\n")
+			// Human recap — "Added 2 agents, changed CLAUDE.md" — so the
+			// user knows at a glance what just happened without reading
+			// git log. Reuses the semantic extractor from commit.go.
+			if recap := renderSyncRecap(r.Plan); recap != "" {
+				sb.WriteString(theme.Hint.Render(recap) + "\n")
+			}
 		} else {
 			sb.WriteString(theme.Good.Render("no changes to push") + "\n")
 		}
@@ -177,6 +186,63 @@ func (m *syncModel) View() string {
 	}
 	sb.WriteString("\n" + theme.Hint.Render("any other key returns to home"))
 	return sb.String()
+}
+
+// renderSyncRecap summarizes a completed plan as a one-liner using the
+// same semantic labels the commit body uses. Skips excluded + no-op rows,
+// collapses Added/Changed/Removed into compact phrases. Returns empty
+// string when there's nothing worth saying.
+func renderSyncRecap(plan sync.Plan) string {
+	var added, changed, removed []string
+	for _, a := range plan.Actions {
+		if a.ExcludedByProfile {
+			continue
+		}
+		if a.Action == manifest.ActionNoOp {
+			continue
+		}
+		label := sync.SemanticLabel(a.Path, nil, nil)
+		switch a.Action {
+		case manifest.ActionAddRemote, manifest.ActionAddLocal:
+			added = append(added, label)
+		case manifest.ActionPush, manifest.ActionPull, manifest.ActionMerge:
+			changed = append(changed, label)
+		case manifest.ActionDeleteRemote, manifest.ActionDeleteLocal:
+			removed = append(removed, label)
+		}
+	}
+	var parts []string
+	if s := recapPhrase("Added", added); s != "" {
+		parts = append(parts, s)
+	}
+	if s := recapPhrase("Changed", changed); s != "" {
+		parts = append(parts, s)
+	}
+	if s := recapPhrase("Removed", removed); s != "" {
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// recapPhrase turns a bucket into something like "Added 2 agents (foo, bar)"
+// or "Changed 1 skill (research-quick)". Caps at 3 named items to keep the
+// one-liner short; anything beyond that reads as "+N more".
+func recapPhrase(verb string, items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	const maxShown = 3
+	shown := items
+	extra := 0
+	if len(shown) > maxShown {
+		shown = shown[:maxShown]
+		extra = len(items) - maxShown
+	}
+	tail := strings.Join(shown, ", ")
+	if extra > 0 {
+		tail = fmt.Sprintf("%s, +%d more", tail, extra)
+	}
+	return fmt.Sprintf("%s %d (%s)", verb, len(items), tail)
 }
 
 // stageGlyph returns a short icon for a sync stage so the streaming log has

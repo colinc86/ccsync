@@ -54,10 +54,15 @@ func schedulePeriodicUpdateCheck() tea.Cmd {
 
 // autoInstallIfNeeded returns a command that silently installs the
 // latest version when (a) update mode is "auto", (b) a newer version is
-// available, and (c) the current binary isn't Homebrew-managed. Returns
-// nil in every other case so tea.Batch filters it out.
+// available, (c) the current binary isn't Homebrew-managed, and (d) we
+// aren't already mid-install. Returns nil in every other case so
+// tea.Batch filters it out. The in-flight latch flip happens here so the
+// caller doesn't have to remember.
 func autoInstallIfNeeded(ctx *AppContext) tea.Cmd {
 	if ctx == nil || ctx.State == nil {
+		return nil
+	}
+	if ctx.UpdateInstalling {
 		return nil
 	}
 	if ctx.State.UpdateMode != "auto" {
@@ -76,6 +81,7 @@ func autoInstallIfNeeded(ctx *AppContext) tea.Cmd {
 	if updater.IsHomebrew(exe) {
 		return nil // brew manages this install; don't stomp on it
 	}
+	ctx.UpdateInstalling = true
 	tag := ctx.LatestVersion
 	return func() tea.Msg {
 		err := updater.InstallRelease(tag, exe)

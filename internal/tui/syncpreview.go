@@ -254,16 +254,24 @@ func (m *syncPreviewModel) View() string {
 			return
 		}
 		sb.WriteString(theme.Secondary.Render(label) + "\n")
-		for i, a := range actions {
-			if i >= 30 {
-				fmt.Fprintf(&sb, theme.Hint.Render("  … %d more\n"), len(actions)-i)
-				break
+		// Bucket by top-level class within the block so 50-file syncs
+		// don't render as a wall: "agents (3)", "skills (2)", etc.
+		for _, bucket := range bucketActions(actions) {
+			fmt.Fprintf(&sb, "  %s %s\n",
+				theme.Hint.Render(fmt.Sprintf("%s (%d)", bucket.Label, len(bucket.Actions))), "")
+			shown := 0
+			for _, a := range bucket.Actions {
+				if shown >= 10 {
+					fmt.Fprintf(&sb, theme.Hint.Render("      … %d more\n"), len(bucket.Actions)-shown)
+					break
+				}
+				cursor := "    "
+				if a.Path == cursorPath {
+					cursor = "  " + theme.Primary.Render("▸ ")
+				}
+				fmt.Fprintf(&sb, "%s%s %s\n", cursor, actionGlyph(a.Action), a.Path)
+				shown++
 			}
-			cursor := "  "
-			if a.Path == cursorPath {
-				cursor = theme.Primary.Render("▸ ")
-			}
-			fmt.Fprintf(&sb, "%s%s %s\n", cursor, actionGlyph(a.Action), a.Path)
 		}
 		sb.WriteString("\n")
 	}
@@ -458,6 +466,66 @@ func newDirectionalSync(ctx *AppContext, only map[string]bool) *syncModel {
 	m := newSync(ctx)
 	m.onlyPaths = only
 	return m
+}
+
+// actionBucket groups a set of actions under a human label (agents,
+// skills, etc.) for the SyncPreview view. Order preserved from the
+// declaration below so rendering is deterministic.
+type actionBucket struct {
+	Label   string
+	Actions []sync.FileAction
+}
+
+// bucketActions groups actions by top-level class. Declaration order is
+// the render order so "CLAUDE.md" shows up before "agents" etc. Classes
+// align with the semantic categories the commit-message extractor uses.
+func bucketActions(actions []sync.FileAction) []actionBucket {
+	const (
+		bClaudeMd   = "CLAUDE.md"
+		bClaudeJSON = "claude.json"
+		bAgents     = "agents"
+		bSkills     = "skills"
+		bCommands   = "commands"
+		bOther      = "other"
+	)
+	order := []string{bClaudeMd, bClaudeJSON, bAgents, bSkills, bCommands, bOther}
+	groups := map[string][]sync.FileAction{}
+	for _, a := range actions {
+		key := classifyPath(a.Path)
+		groups[key] = append(groups[key], a)
+	}
+	var out []actionBucket
+	for _, k := range order {
+		if len(groups[k]) > 0 {
+			out = append(out, actionBucket{Label: k, Actions: groups[k]})
+		}
+	}
+	return out
+}
+
+// classifyPath picks the bucket label for a repo-relative path.
+func classifyPath(repoPath string) string {
+	// Strip the "profiles/<name>/" prefix to work with plain rels.
+	rel := repoPath
+	if strings.HasPrefix(rel, "profiles/") {
+		rest := strings.TrimPrefix(rel, "profiles/")
+		if i := strings.Index(rest, "/"); i >= 0 {
+			rel = rest[i+1:]
+		}
+	}
+	switch {
+	case rel == "CLAUDE.md":
+		return "CLAUDE.md"
+	case rel == "claude.json":
+		return "claude.json"
+	case strings.HasPrefix(rel, "claude/agents/"):
+		return "agents"
+	case strings.HasPrefix(rel, "claude/skills/"):
+		return "skills"
+	case strings.HasPrefix(rel, "claude/commands/"):
+		return "commands"
+	}
+	return "other"
 }
 
 // isPushAction reports whether this action moves data repo-ward.

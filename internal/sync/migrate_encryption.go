@@ -32,13 +32,12 @@ func EnableEncryption(ctx context.Context, in Inputs, passphrase string) (Result
 	if err != nil {
 		return Result{}, err
 	}
-	if err := cryptopkg.WriteMarker(in.RepoPath, marker); err != nil {
-		return Result{}, err
-	}
-	if err := secrets.Store(SecretsKeyPassphrase, passphrase); err != nil {
-		return Result{}, fmt.Errorf("store passphrase: %w", err)
-	}
 
+	// Re-encrypt first. If the walk fails partway we want the filesystem
+	// state to stay plaintext and the keychain/marker to be untouched —
+	// that way the user can safely retry. Persisting the marker and
+	// passphrase BEFORE the walk would leave a half-migrated repo whose
+	// "encrypted" claim doesn't match its contents.
 	if err := walkAndTransform(in.RepoPath, func(relPath string, data []byte) ([]byte, error) {
 		if isMetadataPath(relPath) {
 			return data, nil
@@ -48,7 +47,18 @@ func EnableEncryption(ctx context.Context, in Inputs, passphrase string) (Result
 		}
 		return cryptopkg.Encrypt(key, data)
 	}); err != nil {
+		return Result{}, fmt.Errorf("encrypt repo (no changes persisted yet): %w", err)
+	}
+
+	if err := cryptopkg.WriteMarker(in.RepoPath, marker); err != nil {
 		return Result{}, err
+	}
+	if err := secrets.Store(SecretsKeyPassphrase, passphrase); err != nil {
+		// Walk succeeded but we couldn't cache the passphrase. The user
+		// will hit `ccsync unlock` on next sync to re-enter it; don't
+		// unwind the encryption since that would trash the whole repo.
+		return Result{}, fmt.Errorf("files encrypted but storing passphrase failed "+
+			"(run `ccsync unlock` to re-enter): %w", err)
 	}
 
 	return commitMigration(ctx, in, "enable repo encryption")

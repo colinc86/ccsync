@@ -77,6 +77,14 @@ type State struct {
 	// silently installs a new version in the background when one is
 	// available. Homebrew-installed binaries are never auto-replaced.
 	UpdateMode string `json:"updateMode,omitempty"`
+
+	// OnboardingComplete flips true once the first-run wizard has been
+	// dismissed (whether the user finished it or skipped through). The
+	// Home router uses this to decide whether to push the wizard on
+	// launch. Existing users who had SyncRepoURL set before this field
+	// existed effectively skip onboarding because the Home router checks
+	// SyncRepoURL first — so the backfill is automatic.
+	OnboardingComplete bool `json:"onboardingComplete,omitempty"`
 }
 
 // FetchIntervalDuration returns the parsed fetch interval, or zero when the

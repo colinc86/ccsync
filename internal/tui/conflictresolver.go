@@ -88,7 +88,9 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.result != nil {
-			return m, popScreen()
+			// Conflicts resolved and applied — user's done with this flow.
+			// Return to Home, not back to the Sync screen that pushed us.
+			return m, popToRoot()
 		}
 		switch msg.String() {
 		case "up", "k":
@@ -114,6 +116,12 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if len(m.conflicts) > 0 && m.conflicts[m.cursor].IsJSON {
 				return m, switchTo(newConflictKeyResolver(m.ctx, m.cursor, m.conflicts[m.cursor]))
+			}
+		case "h":
+			// Per-hunk text resolution. JSON conflicts already have per-
+			// key drill-down via enter; hunk resolver is for text files.
+			if len(m.conflicts) > 0 && !m.conflicts[m.cursor].IsJSON {
+				return m, switchTo(newConflictHunkResolver(m.ctx, m.cursor, m.conflicts[m.cursor]))
 			}
 		case "a":
 			if m.allResolved() {
@@ -218,6 +226,6 @@ func (m *conflictResolverModel) View() string {
 	if m.allResolved() {
 		sb.WriteString(theme.Primary.Render("a ") + "apply all • ")
 	}
-	sb.WriteString(theme.Hint.Render("l local • r remote • enter per-key (JSON) • d diff • ↑↓ move"))
+	sb.WriteString(theme.Hint.Render("l local • r remote • enter per-key (JSON) • h per-hunk (text) • d diff • ↑↓ move"))
 	return sb.String()
 }

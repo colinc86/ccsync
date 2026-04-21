@@ -109,13 +109,14 @@ func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirm(msg)
 		case stepDone:
 			// After a successful bootstrap, the most likely next thing the
-			// user wants is to preview the first sync — show them what's
-			// about to change before they apply. On error or cancel they
-			// just pop back to Home.
+			// user wants is to preview the first sync. Use tea.Sequence so
+			// the pop lands BEFORE the push — tea.Batch is order-
+			// independent and would sometimes show a ghost-wizard frame
+			// under the new SyncPreview during the transition.
 			if m.err != nil || m.done == nil {
-				return m, popScreen()
+				return m, popToRoot()
 			}
-			return m, tea.Batch(popScreen(), switchTo(newSyncPreview(m.ctx)))
+			return m, tea.Sequence(popToRoot(), switchTo(newSyncPreview(m.ctx)))
 		}
 	}
 	return m, nil

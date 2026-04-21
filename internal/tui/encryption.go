@@ -158,7 +158,10 @@ func (m *encryptionScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case encStepConfirm:
 			return m.updateConfirm(msg)
 		case encStepResult:
-			return m, popScreen()
+			// "press any key to return" is the copy — go all the way back
+			// to Home rather than leaving the user stuck in Settings →
+			// Encryption with no clear path out.
+			return m, popToRoot()
 		}
 	}
 	return m, nil

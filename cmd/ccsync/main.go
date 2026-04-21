@@ -30,7 +30,7 @@ import (
 	"github.com/colinc86/ccsync/internal/why"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func init() {
 	updater.SetCurrentVersion(version)
@@ -47,7 +47,7 @@ func main() {
 		case "bootstrap":
 			os.Exit(runBootstrap(os.Args[2:]))
 		case "doctor":
-			os.Exit(runDoctor())
+			os.Exit(runDoctor(os.Args[2:]))
 		case "profile":
 			os.Exit(runProfile(os.Args[2:]))
 		case "snapshot":
@@ -99,7 +99,7 @@ Usage:
   ccsync snapshot restore ID          restore local files from a snapshot
   ccsync rollback                     restore local files from latest snapshot
   ccsync rollback --commit SHA        revert repo+local to a specific commit
-  ccsync doctor                       run integrity checks
+  ccsync doctor [--fix]               run integrity checks (optionally auto-fix)
   ccsync why <path>                   trace which rules apply to a path
   ccsync blame <path>                 per-line sync attribution for a repo path
   ccsync watch [--debounce 10s]       auto-sync on local file changes
@@ -214,6 +214,10 @@ func runBootstrap(args []string) int {
 		fmt.Fprintln(os.Stderr, "ccsync:", err)
 		return 1
 	}
+	// Power-user bypass of the TUI wizard — but still flip the flag so
+	// the onboarding flow doesn't nag on next TUI launch.
+	st.OnboardingComplete = true
+	_ = state.Save(stateDir, st)
 	fmt.Printf("bootstrapped: profile=%s repo=%s\n", st.ActiveProfile, st.SyncRepoURL)
 	fmt.Println("next: `ccsync sync` or launch the TUI")
 	return 0
@@ -870,7 +874,11 @@ func runUpdate(args []string) int {
 	return 0
 }
 
-func runDoctor() int {
+func runDoctor(args []string) int {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	fix := fs.Bool("fix", false, "auto-apply safe fixes for detected issues")
+	fs.Parse(args)
+
 	ctx, err := tui.NewContext()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ccsync:", err)
@@ -880,16 +888,32 @@ func runDoctor() int {
 	if ctx.State.SyncRepoURL != "" {
 		repoPath = filepath.Join(ctx.StateDir, "repo")
 	}
-	r := doctor.Check(doctor.Inputs{
+	in := doctor.Inputs{
 		ClaudeDir:  ctx.ClaudeDir,
 		ClaudeJSON: ctx.ClaudeJSON,
 		RepoPath:   repoPath,
 		StateDir:   ctx.StateDir,
-	})
+	}
+	r := doctor.Check(in)
 	for _, f := range r.Findings {
 		fmt.Printf("[%s] %s: %s\n", f.Severity, f.Check, f.Message)
 		if f.Suggest != "" {
 			fmt.Printf("       → %s\n", f.Suggest)
+		}
+	}
+	if *fix {
+		applied, errs := r.ApplyFixes()
+		if applied > 0 {
+			fmt.Printf("\napplied %d fix(es); re-checking…\n\n", applied)
+			r = doctor.Check(in)
+			for _, f := range r.Findings {
+				fmt.Printf("[%s] %s: %s\n", f.Severity, f.Check, f.Message)
+			}
+		} else {
+			fmt.Println("\nno fixable issues found")
+		}
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, "fix error:", e)
 		}
 	}
 	if r.Worst() >= doctor.SeverityFail {

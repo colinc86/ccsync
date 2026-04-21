@@ -221,7 +221,10 @@ func (m *browseTrackedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ignoreChoice = 0
 			m.err = nil
 			return m, nil
-		case "?":
+		case "w":
+			// "why" — used to be `?` but we reserved that for the global
+			// help overlay. `w` is a simple mnemonic for "why is this
+			// path excluded / included".
 			if len(m.filtered) == 0 {
 				return m, nil
 			}
@@ -293,6 +296,13 @@ func (m *browseTrackedModel) toggleCursor() tea.Cmd {
 		}
 		spec.Exclude.Paths = append(paths, pat)
 		m.message = fmt.Sprintf("excluded: %s (rule %q added to %q)", e.RelPath, pat, profName)
+	}
+
+	// yaml's omitempty doesn't fire on non-nil pointers to empty structs,
+	// so we'd serialize `exclude: {}` otherwise. Null it out when empty
+	// so ccsync.yaml stays tidy.
+	if spec.Exclude != nil && len(spec.Exclude.Paths) == 0 {
+		spec.Exclude = nil
 	}
 
 	m.ctx.Config.Profiles[profName] = spec
@@ -574,7 +584,7 @@ func (m *browseTrackedModel) View() string {
 	sb.WriteString("\n" +
 		theme.Primary.Render("space ") + "toggle • " +
 		theme.Primary.Render("i ") + "syncignore • " +
-		theme.Primary.Render("? ") + "why • " +
+		theme.Primary.Render("w ") + "why • " +
 		theme.Primary.Render("/ ") + "filter • " +
 		theme.Hint.Render("↑↓ move • c clear"))
 	return sb.String()

@@ -137,7 +137,8 @@ func (m *updateScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, popScreen()
 			}
 		case updateStepUpToDate, updateStepHomebrew, updateStepDone:
-			return m, popScreen()
+			// Terminal "press any key to return" states — go to Home.
+			return m, popToRoot()
 		}
 	}
 	return m, nil
