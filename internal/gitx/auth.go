@@ -65,12 +65,13 @@ func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 			// 1Password's SSH agent (and similar: keepassxc, secretive)
 			// configures itself via ~/.ssh/config's IdentityAgent rather
 			// than setting SSH_AUTH_SOCK. go-git doesn't read ssh_config,
-			// so bridge the gap: if the user has an IdentityAgent set and
-			// we don't already have an agent socket, honor it.
-			if os.Getenv("SSH_AUTH_SOCK") == "" {
-				if sock := sshConfigIdentityAgent(); sock != "" {
-					_ = os.Setenv("SSH_AUTH_SOCK", sock)
-				}
+			// so bridge the gap. Always override SSH_AUTH_SOCK when an
+			// IdentityAgent is configured — macOS's launchd-started
+			// default ssh-agent usually has SSH_AUTH_SOCK pointing at an
+			// empty listener, which beats 1Password to the draw if we
+			// only read IdentityAgent on empty SSH_AUTH_SOCK.
+			if sock := sshConfigIdentityAgent(); sock != "" {
+				_ = os.Setenv("SSH_AUTH_SOCK", sock)
 			}
 			if agent, err := gitssh.NewSSHAgentAuth("git"); err == nil {
 				return agent, nil
@@ -108,17 +109,19 @@ func (c AuthConfig) Resolve() (transport.AuthMethod, error) {
 	return nil, fmt.Errorf("unknown auth kind: %d", c.Kind)
 }
 
-// sshConfigIdentityAgent scans ~/.ssh/config for an IdentityAgent directive
+// sshConfigIdentityAgent scans ~/.ssh/config for any IdentityAgent directive
 // and returns its resolved path, or "" when no such directive is set.
-// Honors the common "Host *" (or unscoped) case that 1Password, keepassxc,
-// and similar set up for you. Does NOT do full host-pattern matching — a
-// specific Host block's IdentityAgent is still honored as long as we hit
-// it before a non-matching Host cuts us off. Good enough for the 99% case
-// where the user has one IdentityAgent for their main git remote.
 //
-// Unquoting + tilde-expansion included. Unknown tokens (%h, etc.) are not
-// supported — if a user has those, they should set SSHKeyPath explicitly
-// or pre-export SSH_AUTH_SOCK.
+// We deliberately ignore host-pattern scoping: ccsync only talks to one
+// remote (the sync repo), and users configure IdentityAgent either
+// globally or for their git host specifically — both cases should point
+// at the same agent for our purposes. Returning the first match we see
+// keeps the logic simple and matches what real users want 99% of the
+// time (1Password, keepassxc, and similar set a single agent).
+//
+// Includes basic ~ expansion and quote stripping. Unknown ssh_config
+// tokens like %h or %u aren't supported — users with those should set
+// SSHKeyPath explicitly or pre-export SSH_AUTH_SOCK.
 func sshConfigIdentityAgent() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -132,7 +135,6 @@ func sshConfigIdentityAgent() string {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	currentHost := "*" // implicit pre-any-Host scope
 	for scanner.Scan() {
 		raw := scanner.Text()
 		line := strings.TrimSpace(raw)
@@ -148,23 +150,15 @@ func sshConfigIdentityAgent() string {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(kv[0]))
+		if key != "identityagent" {
+			continue
+		}
 		val := strings.TrimSpace(kv[1])
 		val = strings.Trim(val, `"`)
-		switch key {
-		case "host":
-			currentHost = val
-		case "identityagent":
-			// We accept the first IdentityAgent we see under "*" or before
-			// any Host block. More targeted matches are possible, but the
-			// user's sync remote is the only thing we auth against, so
-			// the first catch-all IdentityAgent is usually right.
-			if currentHost == "*" || currentHost == "" {
-				if strings.HasPrefix(val, "~") {
-					val = home + val[1:]
-				}
-				return val
-			}
+		if strings.HasPrefix(val, "~") {
+			val = home + val[1:]
 		}
+		return val
 	}
 	return ""
 }
