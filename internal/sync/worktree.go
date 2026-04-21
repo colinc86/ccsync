@@ -37,20 +37,31 @@ func readProfileTreeFromWorktree(repoPath, prefix string) (map[string][]byte, er
 	return out, err
 }
 
+// placeholderRef is a single redaction placeholder we found in a JSON
+// document: its location (JSON path within the doc) and the profile name
+// embedded in the placeholder string — needed to look up the original
+// value in the keychain, since secrets are scoped by the profile that
+// first redacted them.
+type placeholderRef struct {
+	Path    string // JSON path within the document, sjson syntax
+	Profile string // profile name encoded in the placeholder
+}
+
 // findPlaceholdersInJSON scans raw JSON bytes for redaction placeholder strings
-// and returns their JSON paths. This is a best-effort surface scan — the
-// authoritative walk is in jsonfilter.Restore.
-func findPlaceholdersInJSON(data []byte) []string {
+// and returns their locations along with the profile each was stamped by.
+// This is a best-effort surface scan — the authoritative walk is in
+// jsonfilter.Restore.
+func findPlaceholdersInJSON(data []byte) []placeholderRef {
 	var parsed any
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return nil
 	}
-	var paths []string
-	walkPlaceholders(parsed, "", &paths)
-	return paths
+	var refs []placeholderRef
+	walkPlaceholders(parsed, "", &refs)
+	return refs
 }
 
-func walkPlaceholders(node any, prefix string, out *[]string) {
+func walkPlaceholders(node any, prefix string, out *[]placeholderRef) {
 	switch n := node.(type) {
 	case map[string]any:
 		for k, v := range n {
@@ -65,10 +76,27 @@ func walkPlaceholders(node any, prefix string, out *[]string) {
 			walkPlaceholders(v, prefixIndex(prefix, i), out)
 		}
 	case string:
-		if strings.HasPrefix(n, "<<REDACTED:ccsync:") && strings.HasSuffix(n, ">>") {
-			*out = append(*out, prefix)
+		if prof, ok := parsePlaceholderProfile(n); ok {
+			*out = append(*out, placeholderRef{Path: prefix, Profile: prof})
 		}
 	}
+}
+
+// parsePlaceholderProfile extracts the profile from a redaction placeholder
+// string, returning ok=false for anything that doesn't match the expected
+// format. The format is: <<REDACTED:ccsync:<profile>:<path>>>.
+func parsePlaceholderProfile(s string) (string, bool) {
+	const prefix = "<<REDACTED:ccsync:"
+	const suffix = ">>"
+	if !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, suffix) {
+		return "", false
+	}
+	body := s[len(prefix) : len(s)-len(suffix)]
+	prof, _, ok := strings.Cut(body, ":")
+	if !ok {
+		return "", false
+	}
+	return prof, true
 }
 
 func prefixIndex(prefix string, i int) string {

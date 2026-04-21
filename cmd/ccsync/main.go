@@ -30,7 +30,7 @@ import (
 	"github.com/colinc86/ccsync/internal/why"
 )
 
-const version = "0.2.3"
+const version = "0.3.0-alpha1"
 
 func init() {
 	updater.SetCurrentVersion(version)

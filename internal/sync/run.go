@@ -227,6 +227,7 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			localData = le.data
 			localAbs = le.abs
 		}
+		var baseFromAncestor bool
 		if baseCommit != "" {
 			// For inherited paths (file actually lives under an ancestor
 			// profile's prefix in the commit tree), the child-path lookup
@@ -242,6 +243,7 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 				}
 				if data, ok, _ := repo.BlobAtCommit(baseCommit, probe); ok {
 					baseSHA = manifest.SHA256Bytes(data)
+					baseFromAncestor = i > 0
 					break
 				}
 			}
@@ -249,6 +251,17 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		if data, ok := remoteEntries[path]; ok {
 			remoteSHA = manifest.SHA256Bytes(data)
 			remoteData = data
+		}
+
+		// If this file is absent locally AND the only base match came from
+		// an ancestor profile (not this profile's own history), treat the
+		// base as empty. Otherwise Decide interprets the missing local as
+		// an explicit user delete against the inherited content, producing
+		// a DeleteRemote or a delete-vs-modify conflict. On a machine that
+		// has never had the file (e.g. a fresh work laptop with no
+		// ~/.claude.json yet) we want a clean pull of the inherited data.
+		if localSHA == "" && baseFromAncestor {
+			baseSHA = ""
 		}
 
 		action := manifest.Decide(localSHA, baseSHA, remoteSHA)
@@ -529,16 +542,24 @@ func isConfiguredJSON(rules map[string]config.JSONFileRule, abs string) bool {
 	return ok
 }
 
-// loadKeyringForJSON walks data, finds placeholders, and pulls each from keychain.
+// loadKeyringForJSON walks data, finds placeholders, and pulls each from
+// keychain. Each placeholder carries the profile it was redacted under, so
+// inherited content (e.g. a work profile pulling default's claude.json)
+// looks up secrets under the original redacting profile rather than the
+// active one. Falls back to the active profile to keep older redactions
+// addressable if the keychain key format ever drifts.
 func loadKeyringForJSON(profile string, data []byte) (map[string]string, error) {
 	values := map[string]string{}
-	placeholders := findPlaceholdersInJSON(data)
-	for _, p := range placeholders {
-		raw, err := secrets.Fetch(secrets.Key(profile, p))
+	for _, ref := range findPlaceholdersInJSON(data) {
+		key := secrets.Key(ref.Profile, ref.Path)
+		raw, err := secrets.Fetch(key)
+		if err != nil && ref.Profile != profile {
+			raw, err = secrets.Fetch(secrets.Key(profile, ref.Path))
+		}
 		if err != nil {
 			continue
 		}
-		values[p] = raw
+		values[ref.Path] = raw
 	}
 	return values, nil
 }

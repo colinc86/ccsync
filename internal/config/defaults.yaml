@@ -13,20 +13,63 @@ jsonFiles:
       - $.enabledPlugins
       - $.claudeAiMcpEverConnected
     exclude:
-      - $.cachedGrowthBookFeatures
+      # The include list above is already an allow-list — keys not listed
+      # there never reach the repo. The excludes below are belt-and-
+      # suspenders: they document intent and catch regressions if someone
+      # widens include by mistake.
+      #
+      # Per-project state — paths are machine-specific and can be huge.
       - $.projects
-      - $.numStartups
-      - $.userID
-      - $.claudeCodeFirstTokenDate
-      # account/login state — tied to whichever email is logged in on each
-      # machine. Never sync; keeps work/personal logins from colliding.
+      # Account / login identity — tied to whichever email is logged in on
+      # each machine. Never sync; keeps work/personal logins from colliding.
       - $.oauthAccount
-      - $.tipsHistory
-      - $.firstStartTime
+      - $.userID
+      - $.accountUuid
+      - $.organizationUuid
+      - $.customApiKeyResponses
+      # Onboarding / discovery flags — per-machine first-run state.
       - $.hasCompletedOnboarding
+      - $.hasCompletedProjectOnboarding
       - $.lastOnboardingVersion
+      - $.hasSeenGADisclaimer
+      - $.hasSeenClaudeHaiku4
+      - $.hasSeenOpus4
+      - $.hasSeenSonnet4
+      - $.hasSeenReleaseNotes
+      - $.lastReleaseNotesSeen
+      - $.tipsHistory
+      # Session / startup telemetry — runtime state, not user config.
+      - $.sessionId
+      - $.lastSessionId
+      - $.currentSessionId
+      - $.firstStartTime
+      - $.lastStartTime
+      - $.startTimestamp
+      - $.startTimestamps
+      - $.numStartups
+      - $.claudeCodeFirstTokenDate
+      - $.promptQueueUseCount
+      - $.lastUsedModel
+      - $.lastUsedAt
+      - $.lastKnownVersion
+      - $.lastAutoUpdateCheck
+      - $.installedFeatures
+      - $.mcpContextUris
+      # Feature-flag / experiment caches — rebuilt on each machine.
+      - $.cachedGrowthBookFeatures
+      - $.cachedStatsigGates
+      - $.cachedStatsigExperiments
+      - $.cachedStatsigLayers
+      - $.cachedStatsigDynamicConfigs
+      - $.statsigStableId
+      - $.cachedChangelog
+      # Subscription / rate-limit state — bound to the logged-in account.
       - $.subscriptionNoticeCount
       - $.hasAvailableSubscription
+      - $.hasAvailableMaxSubscription
+      - $.hasReachedMaxSubscriptionLimit
+      - $.isRateLimited
+      - $.isRateLimitedWithFallback
     redact:
       - $.mcpServers.*.env.*
       - $..apiKey
@@ -40,10 +83,11 @@ jsonFiles:
       - $.statusLine.command
 
 defaultSyncignore: |
-  # ephemeral / machine-local
+  # ephemeral / machine-local scratch
   .current-session-id
   .DS_Store
   .lock
+  *.bak
   cache-*.dat
   cache-*.last
   sparkline-*.dat
@@ -52,19 +96,29 @@ defaultSyncignore: |
   statusline-color-*
   statusline-auto-sticky-*
   statusline-command.sh
-  debug/
-  file-history/
-  session-env/
-  sessions/
-  paste-cache/
+  stats-cache.json
+  history.jsonl
+  mcp-needs-auth-cache.json
+  # runtime-state directories — regenerated per machine
+  backups/
   cache/
-  telemetry/
-  shell-snapshots/
+  debug/
+  downloads/
+  file-history/
+  ide/
+  logs/
+  paste-cache/
   plugins/
   projects/
+  session-by-ccpid/
+  session-env/
+  sessions/
+  shell-snapshots/
   tasks/
+  telemetry/
   todos/
+  # machine-local config override — never sync
   settings.local.json
-  # large work products — opt back in per profile if desired
+  # large personal work products — opt back in per profile if desired
   research/
   plans/

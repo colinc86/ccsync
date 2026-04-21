@@ -432,6 +432,102 @@ func TestEncryptionRoundTrip(t *testing.T) {
 	}
 }
 
+// TestInheritedFileArrivesOnMachineMissingLocal — a work machine that has
+// synced before but has never had ~/.claude.json on disk should still pull
+// updates to the inherited default/claude.json, not treat the missing local
+// as a "user deleted it" and conflict/DeleteRemote against the ancestor.
+func TestInheritedFileArrivesOnMachineMissingLocal(t *testing.T) {
+	secrets.MockInit()
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.LoadDefault()
+	cfg.Profiles["work"] = config.ProfileSpec{
+		Description: "work laptop",
+		Extends:     "default",
+	}
+
+	// Machine A (personal, profile=default): full seed, syncs claude.json + agents.
+	homeA := filepath.Join(tmp, "homeA")
+	repoA := filepath.Join(tmp, "repoA")
+	stateA := filepath.Join(tmp, "stateA")
+	seedMachine(t, homeA)
+	if _, err := gitx.Init(repoA, bareDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), machineInputs(homeA, repoA, stateA, cfg), nil); err != nil {
+		t.Fatalf("machine A first sync: %v", err)
+	}
+
+	// Machine B (work, profile=work extends default): ~/.claude exists but
+	// ~/.claude.json does NOT. Claude Code hasn't been launched here yet.
+	// First sync on B establishes state.LastSyncedSHA[work], pulling agents
+	// inherited from default. claude.json won't write because local is
+	// missing and base is empty → AddLocal → pulled.
+	homeB := filepath.Join(tmp, "homeB")
+	repoB := filepath.Join(tmp, "repoB")
+	stateB := filepath.Join(tmp, "stateB")
+	if err := os.MkdirAll(filepath.Join(homeB, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Clone(context.Background(), bareDir, repoB, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Delete B's ~/.claude.json after first sync so the second sync sees
+	// "local missing, base=<inherited default from baseCommit>, remote=<new
+	// default>" — the exact scenario that broke before the ancestor-base fix.
+	inB := machineInputs(homeB, repoB, stateB, cfg)
+	inB.Profile = "work"
+	if _, err := Run(context.Background(), inB, nil); err != nil {
+		t.Fatalf("machine B first sync: %v", err)
+	}
+	if err := os.Remove(filepath.Join(homeB, ".claude.json")); err != nil {
+		t.Fatalf("remove B claude.json: %v", err)
+	}
+
+	// Machine A edits ~/.claude.json (adds an mcpServer) and pushes.
+	jsonA := filepath.Join(homeA, ".claude.json")
+	updated := strings.Replace(fixtureClaudeJSON, `"gemini"`, `"gemini-v2"`, 1)
+	if err := os.WriteFile(jsonA, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), machineInputs(homeA, repoA, stateA, cfg), nil); err != nil {
+		t.Fatalf("machine A second sync: %v", err)
+	}
+
+	// Machine B's second sync — work's baseCommit was set by its first
+	// sync, and profiles/work/claude.json was never there. Base lookup
+	// walks up and hits profiles/default/claude.json. Pre-fix: Decide saw
+	// (local="", base=set, remote=set) → Conflict or DeleteRemote. Post-
+	// fix: baseSHA gets nulled because it came from an ancestor, so Decide
+	// sees (local="", base="", remote=set) → AddLocal → pulled.
+	resB, err := Run(context.Background(), inB, nil)
+	if err != nil {
+		t.Fatalf("machine B second sync: %v", err)
+	}
+	if len(resB.Plan.Conflicts) > 0 {
+		t.Fatalf("unexpected conflicts: %+v", resB.Plan.Conflicts)
+	}
+	got, err := os.ReadFile(filepath.Join(homeB, ".claude.json"))
+	if err != nil {
+		t.Fatalf("expected ~/.claude.json on B after second sync: %v", err)
+	}
+	if !strings.Contains(string(got), "gemini-v2") {
+		t.Errorf("B didn't receive A's update; claude.json = %s", got)
+	}
+	// Critical: A's profiles/default/claude.json must still exist in the
+	// bare repo after B's sync (pre-fix B would have DeleteRemote'd it).
+	inspect := filepath.Join(tmp, "inspectAfter")
+	if _, err := gogit.PlainClone(inspect, false, &gogit.CloneOptions{URL: bareDir}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(inspect, "profiles/default/claude.json")); err != nil {
+		t.Errorf("default/claude.json was deleted from repo by work sync: %v", err)
+	}
+}
+
 func TestDryRunReturnsPlanWithoutWrites(t *testing.T) {
 	secrets.MockInit()
 	tmp := t.TempDir()
