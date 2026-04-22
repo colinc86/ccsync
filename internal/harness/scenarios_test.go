@@ -628,6 +628,68 @@ func TestScenarios(t *testing.T) {
 		_ = before
 	})
 
+	// --- First sync (new machine joining existing repo) ---
+
+	t.Run("first_sync_takes_remote_on_settings_conflict", func(t *testing.T) {
+		// Concrete scenario from v0.6.0-era user report:
+		// 1. Home machine creates repo with its settings.json pushed
+		//    to profiles/default/
+		// 2. Work machine joins, picks "create work extending default"
+		// 3. Work's LOCAL settings.json exists (Claude Code wrote one
+		//    on first launch) but differs from home's version
+		// 4. First sync sees both sides with content + no prior base
+		//    → add-vs-add → conflict under the old code
+		//
+		// The fix: first-sync (state.LastSyncedSHA[profile] == "")
+		// auto-resolves file conflicts in remote's favor, because
+		// "joining an existing setup" semantically means "adopt what's
+		// there." Subsequent edits diverge normally.
+		s := harness.NewScenario(t, harness.WithProfiles(map[string]config.ProfileSpec{
+			"work": {Extends: "default"},
+		}))
+		home := s.NewMachine("home").WriteClaudeFile("settings.json", `{"theme":"dark","autoUpdatesChannel":"latest"}`)
+		home.Sync()
+
+		// Work joins with a different local settings.json — simulating
+		// Claude Code's first-launch default on a fresh machine.
+		work := s.NewMachine("work").UseProfile("work").
+			WriteClaudeFile("settings.json", `{"theme":"light"}`)
+		res := work.Sync()
+
+		// No conflicts should have been surfaced — first sync adopted
+		// home's version.
+		if len(res.Plan.Conflicts) > 0 {
+			t.Fatalf("first sync should auto-resolve conflicts; got %d:\n%+v", len(res.Plan.Conflicts), res.Plan.Conflicts)
+		}
+		got, ok := work.ReadClaudeFile("settings.json")
+		if !ok {
+			t.Fatal("settings.json absent on work after first sync")
+		}
+		if !strings.Contains(got, `"autoUpdatesChannel"`) || !strings.Contains(got, `"latest"`) {
+			t.Errorf("work should have adopted home's settings.json; got:\n%s", got)
+		}
+	})
+
+	t.Run("first_sync_still_pushes_work_only_content", func(t *testing.T) {
+		// Complement of the above: files unique to work's local disk
+		// should still push up to profiles/work/ — "take remote on
+		// conflicts" only applies when there's actual divergence.
+		s := harness.NewScenario(t, harness.WithProfiles(map[string]config.ProfileSpec{
+			"work": {Extends: "default"},
+		}))
+		home := s.NewMachine("home").WriteClaudeFile("agents/shared.md", "home's agent")
+		home.Sync()
+
+		work := s.NewMachine("work").UseProfile("work").
+			WriteClaudeFile("agents/workonly.md", "work's own")
+		work.Sync()
+
+		// Work's unique agent lands in profiles/work/ (profile-local).
+		s.AssertBareHasPath("profiles/work/claude/agents/workonly.md")
+		// Home's agent was inherited cleanly.
+		work.AssertClaudeFile("agents/shared.md", "home's agent")
+	})
+
 	// --- Auto behavior ---
 
 	t.Run("clean_sync_produces_no_commit", func(t *testing.T) {

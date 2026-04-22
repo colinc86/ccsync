@@ -325,6 +325,21 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		case manifest.ActionMerge:
 			merged, clean := mergeFile(path, nil, localData, remoteData)
 			if !clean.Clean() {
+				// First sync for this profile: no prior base to merge
+				// against, so any "both sides differ" falls here. Since
+				// the user is joining an existing repo, remote wins by
+				// default — align local to what the shared state says,
+				// then subsequent edits diverge normally with a real
+				// base to merge from. Without this, every machine #2
+				// fresh setup surfaces a settings.json conflict because
+				// local + remote both have content with no base.
+				if baseCommit == "" {
+					pendingRepoWrites[path] = remoteData
+					if localAbs != "" {
+						pendingLocalWrites[localAbs] = remoteData
+					}
+					continue
+				}
 				plan.Conflicts = append(plan.Conflicts, FileConflict{
 					Path:       path,
 					Conflicts:  clean.Conflicts,
@@ -340,6 +355,20 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 				pendingLocalWrites[localAbs] = merged.Merged
 			}
 		case manifest.ActionConflict:
+			// Same first-sync treatment for structural conflicts
+			// (add-vs-add-with-different-bytes, etc.).
+			if baseCommit == "" {
+				if remoteData != nil {
+					pendingRepoWrites[path] = remoteData
+					if localAbs != "" {
+						pendingLocalWrites[localAbs] = remoteData
+					}
+				} else if localAbs != "" {
+					// Remote side absent, local deleting → delete local.
+					pendingLocalWrites[localAbs] = nil
+				}
+				continue
+			}
 			plan.Conflicts = append(plan.Conflicts, FileConflict{
 				Path: path,
 				Conflicts: []merge.Conflict{{
