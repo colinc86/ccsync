@@ -80,6 +80,23 @@ func Delete(key string) error {
 	return err
 }
 
+// DeleteAll removes every secret ccsync has stored under its service
+// name. Used by `ccsync uninstall --purge` and by tests that want a
+// clean slate. On macOS this walks the keychain and removes each
+// matching entry; on Linux with Secret Service, same. Best-effort —
+// platform quirks and partial permissions can leave stragglers, so
+// callers should treat errors as advisory rather than fatal.
+func DeleteAll() error {
+	if useFileBackend() {
+		return fileDeleteAll()
+	}
+	err := keyring.DeleteAll(ServiceName)
+	if err != nil && errors.Is(err, keyring.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // MockInit switches the keychain backend to an in-memory provider.
 // Tests that need cross-invocation persistence should set the
 // CCSYNC_SECRETS_BACKEND=file env var instead.
@@ -151,4 +168,28 @@ func fileDelete(key string) error {
 		return nil
 	}
 	return err
+}
+
+// fileDeleteAll removes every secret file under the file backend dir.
+// Used by uninstall --purge so the file-backend path has parity with
+// keychain-backend DeleteAll.
+func fileDeleteAll() error {
+	dir, err := fileBackendDir()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
+	return nil
 }

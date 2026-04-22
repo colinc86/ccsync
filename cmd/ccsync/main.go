@@ -30,7 +30,7 @@ import (
 	"github.com/colinc86/ccsync/internal/why"
 )
 
-const version = "0.5.0"
+const version = "0.5.1"
 
 func init() {
 	updater.SetCurrentVersion(version)
@@ -68,6 +68,8 @@ func main() {
 			os.Exit(runDecrypt(os.Args[2:]))
 		case "unlock":
 			os.Exit(runUnlock(os.Args[2:]))
+		case "uninstall":
+			os.Exit(runUninstall(os.Args[2:]))
 		case "--help", "-h":
 			printHelp()
 			return
@@ -107,6 +109,7 @@ Usage:
   ccsync decrypt                      disable repo encryption
   ccsync unlock                       store the passphrase for an encrypted repo
   ccsync update [--check] [--force]   install the latest release in place
+  ccsync uninstall [--yes]            remove state, snapshots, secrets, and self
   ccsync --version                    print version`)
 }
 
@@ -920,4 +923,109 @@ func runDoctor(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// runUninstall removes everything ccsync has written on this machine
+// (state dir, snapshots, keychain secrets) and finally the binary
+// itself. Leaves ~/.claude and ~/.claude.json untouched — those
+// belong to Claude Code, not us. The remote sync repo is also left
+// alone; deleting it is a separate choice on the user's GitHub/host.
+//
+// The --yes flag skips the interactive prompt; otherwise we print the
+// plan and ask for confirmation.
+func runUninstall(args []string) int {
+	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
+	yes := fs.Bool("yes", false, "skip the interactive confirmation")
+	fs.BoolVar(yes, "y", false, "alias for --yes")
+	_ = fs.Parse(args)
+
+	stateDir, err := state.DefaultStateDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "uninstall:", err)
+		return 1
+	}
+	exePath, _ := os.Executable()
+
+	fmt.Println("ccsync uninstall — the following will be removed from this machine:")
+	fmt.Println()
+	fmt.Printf("  state directory  %s\n", stateDir)
+	fmt.Printf("    - state.json, repo clone, snapshots, file-backend secrets\n")
+	fmt.Printf("  keychain secrets  service \"%s\"\n", secrets.ServiceName)
+	fmt.Printf("  binary            %s\n", binaryLabel(exePath))
+	fmt.Println()
+	fmt.Println("NOT touched:")
+	fmt.Println("  ~/.claude/, ~/.claude.json  (Claude Code's own files)")
+	fmt.Println("  the remote sync repo        (delete on GitHub/host if you want it gone)")
+	fmt.Println()
+
+	if !*yes {
+		fmt.Print("Proceed? (y/N) ")
+		var ans string
+		_, _ = fmt.Scanln(&ans)
+		ans = strings.ToLower(strings.TrimSpace(ans))
+		if ans != "y" && ans != "yes" {
+			fmt.Println("aborted.")
+			return 0
+		}
+	}
+
+	var errs []error
+
+	// 1. Keychain / file-backend secrets. Do this FIRST because the
+	// backend choice lives in state.json which we're about to delete.
+	if st, err := state.Load(stateDir); err == nil {
+		secrets.SetBackend(string(st.SecretsBackend))
+	}
+	if err := secrets.DeleteAll(); err != nil {
+		errs = append(errs, fmt.Errorf("keychain: %w", err))
+	} else {
+		fmt.Println("removed keychain secrets")
+	}
+
+	// 2. State directory (includes repo clone + snapshots + file-backend).
+	if err := os.RemoveAll(stateDir); err != nil {
+		errs = append(errs, fmt.Errorf("state dir: %w", err))
+	} else {
+		fmt.Printf("removed %s\n", stateDir)
+	}
+
+	// 3. The binary itself. On darwin/linux removing a running binary
+	// is fine — the kernel keeps the inode alive for this process and
+	// the path just goes away. Homebrew-managed binaries should go
+	// through `brew uninstall`, so we bail out with instructions.
+	switch {
+	case exePath == "":
+		fmt.Println("skipped binary — couldn't resolve own path; remove manually")
+	case updater.IsHomebrew(exePath):
+		fmt.Println("skipped binary — appears Homebrew-managed; run: brew uninstall ccsync")
+	default:
+		if err := os.Remove(exePath); err != nil {
+			errs = append(errs, fmt.Errorf("binary: %w", err))
+		} else {
+			fmt.Printf("removed %s\n", exePath)
+		}
+	}
+
+	if len(errs) > 0 {
+		fmt.Fprintln(os.Stderr)
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, "error:", e)
+		}
+		return 1
+	}
+	fmt.Println()
+	fmt.Println("ccsync is gone from this machine.")
+	return 0
+}
+
+// binaryLabel renders a readable install path for the uninstall banner,
+// distinguishing Homebrew from a normal install.
+func binaryLabel(exe string) string {
+	if exe == "" {
+		return "(unknown — install path not resolvable)"
+	}
+	if updater.IsHomebrew(exe) {
+		return exe + "  (Homebrew-managed — will skip)"
+	}
+	return exe
 }
