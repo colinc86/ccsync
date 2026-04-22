@@ -1,0 +1,22 @@
+{
+  "claudeAiMcpEverConnected": [
+    "claude.ai GraphOS MCP Tools",
+    "claude.ai Context7",
+    "claude.ai Excalidraw",
+    "claude.ai Slack",
+    "claude.ai Figma",
+    "claude.ai Atlassian",
+    "claude.ai Gmail",
+    "claude.ai Granola",
+    "claude.ai Google Calendar",
+    "claude.ai Storyblok",
+    "claude.ai Google Drive"
+  ],
+  "companion": {
+    "hatchedAt": 1775064694007,
+    "name": "Muser",
+    "personality": "An eerily calm rabbit who gazes intently at your code for uncomfortably long stretches, then offers a single devastating observation that makes you realize you've been debugging the wrong file for two hours."
+  },
+  "installMethod": "native",
+  "theme": "auto"
+}

@@ -1,0 +1,33 @@
+{
+  "enabledPlugins": {
+    "feature-dev@claude-plugins-official": true,
+    "github@claude-plugins-official": true,
+    "gopls-lsp@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true,
+    "warp@claude-code-warp": true
+  },
+  "env": {
+    "DISABLE_AUTOUPDATER": "1"
+  },
+  "extraKnownMarketplaces": {
+    "claude-code-warp": {
+      "source": {
+        "repo": "warpdotdev/claude-code-warp",
+        "source": "github"
+      }
+    }
+  },
+  "hooks": {
+    "PreToolUse": []
+  },
+  "model": "opusplan",
+  "permissions": {
+    "defaultMode": "auto"
+  },
+  "skipAutoPermissionPrompt": true,
+  "skipDangerousModePermissionPrompt": true,
+  "statusLine": {
+    "command": "<<REDACTED:ccsync:default:statusLine.command>>",
+    "type": "command"
+  }
+}

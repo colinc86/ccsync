@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-22T02:18:10.559385Z",
+  "updatedBy": "88a4222c66d7b4b8",
+  "files": {
+    "profiles/default/claude.json": {
+      "sha256": "1d7a3231ec2b0ad28b8f82fc425ce6ecf3212b4d78a264a9df64b647471c673a",
+      "size": 690,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/CLAUDE.md": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/RTK.md": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/citation-graph-builder.md": {
+      "sha256": "5a8652398b879d7c4e45fefd9539e5ba506f2185d8fe8dcf8a69d98a20bb251b",
+      "size": 4199,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/contradiction-finder.md": {
+      "sha256": "9900cd891e400197d72766bf5520749dcceec5644aa1f07d5e94210d2e5a1cd6",
+      "size": 6245,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/cs-domain-expert.md": {
+      "sha256": "c8f8add29565922a7c4ec99081a0a92030a98e1718f0a30bd9a7f317f1b579fd",
+      "size": 5336,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/embedding-indexer.md": {
+      "sha256": "1521392454fc784cfaec99d75f9b6f3439dcdc21ead736bef6b39398b2b14c6d",
+      "size": 4713,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/methodology-critic.md": {
+      "sha256": "72d0d797e4db1ecd80f1322b3a8e9786d4bde573eff9bcf38fad6e34caa51344",
+      "size": 5798,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/paper-reader.md": {
+      "sha256": "ffe8bd36b93bae9ff24a4c90ebeedb93c5dba352a5d77fe9d7dae49eb991ad64",
+      "size": 5287,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/research-academic-graph.md": {
+      "sha256": "cecc0d8541b1ba36c51cd44e5654dcd5a2c1ba2bec35f8d80b4ee11574f68cde",
+      "size": 4409,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/research-arxiv.md": {
+      "sha256": "b42086481da6092753095b7103c40c1587ce4dfd6cd0a361a5176bada26988e4",
+      "size": 4123,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/research-community.md": {
+      "sha256": "abda18908d4488ea07896ea4c400029d847f9f1e597a94e3d0fa37127c6f99a9",
+      "size": 4720,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/research-github.md": {
+      "sha256": "32447e373febad0cb5bfdfc74569c26e7d98c74ade14cf0301664d6393130e81",
+      "size": 4329,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/research-web.md": {
+      "sha256": "bba7e34a3a18c61243864d35e216cb281d1072b99ffcca8a7c09584c0031ee84",
+      "size": 3601,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/agents/synthesizer.md": {
+      "sha256": "ef5addb67712a8ae83a773519c2eee6441d86ef8cf31742618c147cb16f83161",
+      "size": 4815,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/commands/cite.md": {
+      "sha256": "c4a552194ed1beae45ef88022707e565f82b49c833900351d4f99e5d2c031ee9",
+      "size": 2955,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/commands/research-deep.md": {
+      "sha256": "f517d4d34cc5ff0e2aea2380cfdc94fc9c6b97ad9ca29b70574868be65282d5c",
+      "size": 2337,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/commands/research-list-papers.md": {
+      "sha256": "c9b12f7eb7b5f7c4e68c767bab0f8adb0e25753799776ac5b6d6dee5f17d1441",
+      "size": 3136,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/commands/research-quick.md": {
+      "sha256": "e3549658479a505916db6c094554aa38484116aa9a1f281c2f92517dc67d4197",
+      "size": 2376,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/commands/research-resume.md": {
+      "sha256": "def4aa84929cb25b97573d8b336a1905e6e349da648df7e76b0e1ee0590b1474",
+      "size": 3821,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/commands/research-status.md": {
+      "sha256": "170a75b2dbca6df13f17df87884d126f29101c14a2701857804322b6dc6b297b",
+      "size": 2485,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/commands/research.md": {
+      "sha256": "7509033a3e85edc7a3a1a9148b5f9247dfb3777e4f77d77ada4458bf28f72a1e",
+      "size": 1793,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/keybindings.json": {
+      "sha256": "efc514b86167a59053925d3e75351efa7d2a744b980ffac0335ef2eaab1e490e",
+      "size": 258,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/policy-limits.json": {
+      "sha256": "472a6fd1107cf957729417dc48eb3bd53a3b2616efe2112925a8524e0bc9511a",
+      "size": 98,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/remote-settings.json": {
+      "sha256": "edd66dff97ec22414b1a714b1eec59e20af18abf3028d3669ff3a752c29ac24f",
+      "size": 773,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/settings.json": {
+      "sha256": "41221b928ec63a10891f4ebc2d94e8812286782ecf10bee9181773e34abae623",
+      "size": 769,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/academic-graph-query/SKILL.md": {
+      "sha256": "683ff832c9d19f71ccf4519e359393427e52b71a0786f25b05c601ff9a22157d",
+      "size": 7776,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/arxiv-query/SKILL.md": {
+      "sha256": "0a0725d5ce6a1529cf5227eceb9efaf984d58c83c09b4d667c0ab66129bbfc71",
+      "size": 5160,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/community-query/SKILL.md": {
+      "sha256": "ded2c30d2a22cb88c202d66b7565ec0ca3763cefb8ba33862e8cf8552c541122",
+      "size": 7541,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/embed-and-rank/SKILL.md": {
+      "sha256": "53bce7093ca4dce810d460c8f10ec276b6d3aa9e207fabe32cb36250e5d378d5",
+      "size": 7864,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/paper-synthesis/SKILL.md": {
+      "sha256": "8a0cbbfeaa4ea1d0b30aba0fcc011ba20ef08e9c5319f33fbd76f7bd19d23314",
+      "size": 6846,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/research-orchestration/SKILL.md": {
+      "sha256": "c670ca7fb7b21b4c0695ce42420cab48a5506bff91b03668cfdf586d03f7617a",
+      "size": 16497,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/statusauto/SKILL.md": {
+      "sha256": "ed8ce5ceb9e92cc7334b0a931bd720cfe18037914ffeb81e8371aa3d555beca5",
+      "size": 972,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/statuscolor/SKILL.md": {
+      "sha256": "8a4d9a9daae99a8451f415ff629666330b314c66836fdc5c52c60858366fa2e3",
+      "size": 947,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/statuscompact/SKILL.md": {
+      "sha256": "723729681ac88bec15380c4b41f9af49c469fe76bebe1581c9ed31d4460a88c7",
+      "size": 579,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/statusmini/SKILL.md": {
+      "sha256": "30d501c21c2304217fe105d1f0601e66e4959251096fedf76b327ec75fe2f9b0",
+      "size": 976,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/statusoff/SKILL.md": {
+      "sha256": "d7f691831614fb4de3ba3e3fe35fbd2cd3586b9f6fa6c246d7131e0c72cea14b",
+      "size": 546,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/skills/statusverbose/SKILL.md": {
+      "sha256": "01afa840e1c594d7b59d8f6cd72c409ab3ffd72f225c287304dabc4a71b75854",
+      "size": 580,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    },
+    "profiles/default/claude/statusline-mode": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "mtime": "2026-04-22T02:18:10.559304Z",
+      "lastModifiedBy": "88a4222c66d7b4b8"
+    }
+  }
+}

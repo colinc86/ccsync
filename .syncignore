@@ -1,0 +1,41 @@
+# ephemeral / machine-local scratch
+.current-session-id
+.last-seen-version
+.last-*
+.DS_Store
+.lock
+*.bak
+cache-*.dat
+cache-*.last
+sparkline-*.dat
+sparkline-*.last
+statusline-mode-*
+statusline-color-*
+statusline-auto-sticky-*
+statusline-command.sh
+stats-cache.json
+history.jsonl
+mcp-needs-auth-cache.json
+# runtime-state directories — regenerated per machine
+backups/
+cache/
+debug/
+downloads/
+file-history/
+ide/
+logs/
+paste-cache/
+plugins/
+projects/
+session-by-ccpid/
+session-env/
+sessions/
+shell-snapshots/
+tasks/
+telemetry/
+todos/
+# machine-local config override — never sync
+settings.local.json
+# large personal work products — opt back in per profile if desired
+research/
+plans/
