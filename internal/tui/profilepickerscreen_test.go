@@ -16,11 +16,38 @@ import (
 // picker's constructor + Init + View. Uses t.TempDir for StateDir so
 // any state.Save calls from the test don't collide with the real
 // ~/.ccsync.
-func newTestPickerCtx(t *testing.T, profiles []string, activeProfile string) *AppContext {
+//
+// withContent controls whether the repo worktree has pre-existing
+// content under profiles/<active>/claude/ — the signal the picker
+// uses to distinguish "machine #1 fresh repo" (no content, should
+// auto-advance) from "machine #2 joining" (has content, must show
+// picker).
+func newTestPickerCtx(t *testing.T, profiles []string, activeProfile string, withContent bool) *AppContext {
 	t.Helper()
 	cfg := &config.Config{Profiles: map[string]config.ProfileSpec{}}
 	for _, p := range profiles {
 		cfg.Profiles[p] = config.ProfileSpec{Description: p + " profile"}
+	}
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if withContent {
+		active := activeProfile
+		if active == "" && len(profiles) > 0 {
+			active = profiles[0]
+		}
+		if active == "" {
+			active = "default"
+		}
+		// Simulate content from another machine's prior syncs.
+		subtree := filepath.Join(repoPath, "profiles", active, "claude")
+		if err := os.MkdirAll(subtree, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subtree, "CLAUDE.md"), []byte("existing"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return &AppContext{
 		State: &state.State{
@@ -29,27 +56,25 @@ func newTestPickerCtx(t *testing.T, profiles []string, activeProfile string) *Ap
 		},
 		Config:   cfg,
 		StateDir: t.TempDir(),
-		RepoPath: filepath.Join(t.TempDir(), "repo"),
+		RepoPath: repoPath,
 	}
 }
 
-// TestProfilePickerNeverAutoAdvances is the regression test for the
-// v0.6.0/v0.6.1 bug where the picker short-circuited past the user
-// when there was only a "default" profile AND ActiveProfile was set
-// — exactly the shape a cloned repo + freshly-bootstrapped machine
-// presents. The picker silently joined default, stranding the user
-// on the wrong profile. This test fails if the short-circuit comes
-// back: Init() must return nil (no auto-finish command) AND View()
-// must render the picker UI.
-func TestProfilePickerNeverAutoAdvances(t *testing.T) {
+// TestProfilePickerShowsPickerWhenContentExists covers the
+// machine #2+ case: a repo with pre-existing profile content means
+// the user is joining something that was set up elsewhere, so they
+// need the picker to decide between joining as-is or creating a new
+// profile. The v0.6.0/v0.6.1 regression silently skipped this exact
+// case. This test fails loudly if that short-circuit comes back.
+func TestProfilePickerShowsPickerWhenContentExists(t *testing.T) {
 	cases := []struct {
 		name          string
 		profiles      []string
 		activeProfile string
 	}{
-		{"single default; no active profile yet",
+		{"single default with content; no active yet",
 			[]string{"default"}, ""},
-		{"single default; active already set to default (post-bootstrap)",
+		{"single default with content; active already default (post-bootstrap)",
 			[]string{"default"}, "default"},
 		{"multiple profiles; no active",
 			[]string{"default", "home"}, ""},
@@ -58,18 +83,12 @@ func TestProfilePickerNeverAutoAdvances(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := newTestPickerCtx(t, tc.profiles, tc.activeProfile)
+			ctx := newTestPickerCtx(t, tc.profiles, tc.activeProfile, true /*withContent*/)
 			m := newProfilePickerScreen(ctx)
 
-			// Init must return nil. Any non-nil Cmd here is a code
-			// smell — the picker's only job at Init time is to render
-			// a choice. The v0.6.0/v0.6.1 auto-advance bug was
-			// exactly this: Init returned a Cmd that produced an
-			// autoFinishMsg, skipping the user entirely.
 			if cmd := m.Init(); cmd != nil {
-				t.Fatalf("picker Init returned a non-nil Cmd; user may never see the picker (this is the v0.6.0/v0.6.1 auto-advance regression)")
+				t.Fatalf("picker Init returned a non-nil Cmd when repo has existing content; user may never see the picker (v0.6.0/v0.6.1 regression shape)")
 			}
-
 			view := m.View()
 			if !strings.Contains(view, "create a new profile") {
 				t.Errorf("picker view missing create-new-profile affordance; user can't make a second profile.\nview:\n%s", view)
@@ -81,12 +100,35 @@ func TestProfilePickerNeverAutoAdvances(t *testing.T) {
 	}
 }
 
+// TestProfilePickerAutoAdvancesOnFreshlyBootstrappedRepo covers the
+// inverse case: user just created a brand-new repo with `ccsync
+// bootstrap`; ccsync.yaml has just "default" and no content lives
+// under profiles/default/claude/ yet. Showing the picker here would
+// frame a "choice" the user didn't make — the profile was created by
+// their own bootstrap seconds ago. We auto-advance instead.
+func TestProfilePickerAutoAdvancesOnFreshlyBootstrappedRepo(t *testing.T) {
+	ctx := newTestPickerCtx(t, []string{"default"}, "default", false /*no content*/)
+	m := newProfilePickerScreen(ctx)
+	if !m.autoJoin {
+		t.Error("fresh-bootstrap repo should auto-join; user shouldn't be asked to pick from a list of one they just created")
+	}
+	// Init must return a non-nil Cmd carrying the auto-join signal.
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("auto-join mode should return a Cmd from Init so Update can finalize")
+	}
+	msg := cmd()
+	if _, ok := msg.(autoJoinMsg); !ok {
+		t.Errorf("fresh-bootstrap Init should emit autoJoinMsg; got %T", msg)
+	}
+}
+
 // TestProfilePickerEnterOnExistingActivates drives the happy-path:
 // user presses enter on the highlighted row, state.ActiveProfile
 // updates, OnboardingComplete flips true, and the transition command
 // fires.
 func TestProfilePickerEnterOnExistingActivates(t *testing.T) {
-	ctx := newTestPickerCtx(t, []string{"default", "home"}, "")
+	ctx := newTestPickerCtx(t, []string{"default", "home"}, "", true)
 	m := newProfilePickerScreen(ctx)
 	// Cursor defaults to 0 (first name in sorted order = "default").
 	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -113,7 +155,7 @@ func TestProfilePickerEnterOnExistingActivates(t *testing.T) {
 // config with extends set to the first existing profile, that it's
 // activated, and OnboardingComplete flips.
 func TestProfilePickerCreateNewProfile(t *testing.T) {
-	ctx := newTestPickerCtx(t, []string{"default"}, "default")
+	ctx := newTestPickerCtx(t, []string{"default"}, "default", true)
 	// Seed the repo path with a ccsync.yaml so profile.Create can save.
 	if err := writeCCSyncYamlForTest(ctx); err != nil {
 		t.Fatal(err)

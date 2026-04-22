@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -36,6 +38,17 @@ type profilePickerModel struct {
 
 	err  error
 	done bool
+
+	// autoJoin is true for a freshly-bootstrapped repo that has
+	// exactly one profile and no content under it yet — i.e. the
+	// user just created this repo themselves, so there's no real
+	// choice to make and the picker's "this repo already has…"
+	// framing would be confusing. Init() fires an auto-finish Cmd
+	// in that case. Different from the original v0.6.0/v0.6.1 bug
+	// because that one auto-advanced whenever a single profile
+	// existed, regardless of content — silently stranding machine
+	// #2 users on default.
+	autoJoin bool
 }
 
 func newProfilePickerScreen(ctx *AppContext) *profilePickerModel {
@@ -51,19 +64,60 @@ func newProfilePickerScreen(ctx *AppContext) *profilePickerModel {
 		}
 	}
 
-	// NO auto-advance. v0.6.1's first attempt short-circuited on a
-	// single-profile repo, which silently made machine #2 setups
-	// stick on "default" and miss the "create a new profile" option.
-	// The correct behavior is always to show the picker — one
-	// keystroke of friction on machine #1 is the right tradeoff
-	// against silently wrong joins on machine #2+. Covered by
-	// TestProfilePickerNeverAutoAdvances.
+	// Auto-advance narrowly: only when the repo has exactly one
+	// profile AND its content subtree is empty. That's the "I just
+	// created this repo from scratch" shape — showing "this repo
+	// already has profiles…" in that case would be wrong. Machine #2
+	// joining an existing repo fails this check because the other
+	// machine's prior syncs populated the subtree; the picker shows
+	// normally there.
+	m.autoJoin = isFreshlyBootstrappedRepo(ctx, names)
 	return m
+}
+
+// isFreshlyBootstrappedRepo reports whether the repo was just created
+// by this machine's own bootstrap and has no cross-machine content
+// yet. The signals:
+//
+//  1. Exactly one profile in ccsync.yaml.
+//  2. The active profile's claude/ subtree in the repo either doesn't
+//     exist yet or contains no files.
+//
+// The second signal is what distinguishes machine #1 fresh-repo
+// (empty subtree) from machine #2 joining (subtree has files from the
+// other machine's syncs).
+func isFreshlyBootstrappedRepo(ctx *AppContext, names []string) bool {
+	if len(names) != 1 {
+		return false
+	}
+	active := ctx.State.ActiveProfile
+	if active == "" {
+		active = names[0]
+	}
+	subtree := filepath.Join(ctx.RepoPath, "profiles", active, "claude")
+	entries, err := os.ReadDir(subtree)
+	if err != nil {
+		// Dir doesn't exist → fresh bootstrap. (Any other error is
+		// rare enough we treat as "fresh"; worst case is showing the
+		// picker when we could've skipped it.)
+		return true
+	}
+	return len(entries) == 0
 }
 
 func (m *profilePickerModel) Title() string { return "Which profile is this machine?" }
 
-func (m *profilePickerModel) Init() tea.Cmd { return nil }
+// autoJoinMsg is fired by Init() when autoJoin is set, and handled by
+// Update() to finalize straight through without showing the picker UI.
+// A distinct type from profilePickerDoneMsg so tests can tell them apart.
+type autoJoinMsg struct{}
+
+func (m *profilePickerModel) Init() tea.Cmd {
+	if m.autoJoin {
+		return func() tea.Msg { return autoJoinMsg{} }
+	}
+	return nil
+}
 
 // CapturesEscape keeps esc from popping the screen while the user is
 // typing into the name field — it should cancel back to the picker
@@ -77,6 +131,13 @@ type profilePickerDoneMsg struct{ err error }
 
 func (m *profilePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case autoJoinMsg:
+		// Freshly-bootstrapped repo: quietly finalize onto the single
+		// existing profile, no keystroke required.
+		if len(m.names) == 0 {
+			return m, nil
+		}
+		return m, m.finalizeAs(m.names[m.cur])
 	case profilePickerDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -193,6 +254,9 @@ func (m *profilePickerModel) finalizeCreating(name string) tea.Cmd {
 }
 
 func (m *profilePickerModel) View() string {
+	if m.autoJoin && !m.done {
+		return theme.Hint.Render("setting up…")
+	}
 	var sb strings.Builder
 	if m.err != nil {
 		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
