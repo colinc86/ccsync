@@ -99,15 +99,18 @@ func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stepConfirm:
 			return m.updateConfirm(msg)
 		case stepDone:
-			// After a successful bootstrap, the most likely next thing the
-			// user wants is to preview the first sync. Use tea.Sequence so
-			// the pop lands BEFORE the push — tea.Batch is order-
-			// independent and would sometimes show a ghost-wizard frame
-			// under the new SyncPreview during the transition.
+			// After a successful bootstrap, hand off to the profile
+			// picker — it'll decide whether this machine joins an
+			// existing profile or creates a new one. On a fresh
+			// single-profile repo the picker auto-advances without a
+			// keystroke, so machine #1 setup stays frictionless.
+			//
+			// On error, just pop back to Home so the user can retry or
+			// read the message.
 			if m.err != nil || m.done == nil {
 				return m, popToRoot()
 			}
-			return m, tea.Sequence(popToRoot(), switchTo(newSyncPreview(m.ctx)))
+			return m, tea.Sequence(popToRoot(), switchTo(newProfilePickerScreen(m.ctx)))
 		}
 	}
 	return m, nil
