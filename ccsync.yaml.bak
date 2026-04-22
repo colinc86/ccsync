@@ -1,8 +1,7 @@
 profiles:
     default:
         description: Primary config
-    work:
-        extends: default
+    work: {}
 jsonFiles:
     ~/.claude.json:
         include:

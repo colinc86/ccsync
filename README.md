@@ -11,8 +11,8 @@ secrets (API keys, OAuth tokens) live only in each machine's OS keychain.
 ## Last sync
 
 - **host:** electrocampbell
-- **active profile:** default
-- **time:** 2026-04-22T02:18:10Z UTC
+- **active profile:** work
+- **time:** 2026-04-22T02:18:20Z UTC
 
 ## What's safe to edit by hand
 
