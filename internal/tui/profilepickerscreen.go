@@ -34,9 +34,8 @@ type profilePickerModel struct {
 	creating  bool            // flipping to "name this new profile" sub-view
 	nameInput textinput.Model // used while creating
 
-	err       error
-	done      bool
-	autoJoined bool // when true, Init auto-advances (single-profile case)
+	err  error
+	done bool
 }
 
 func newProfilePickerScreen(ctx *AppContext) *profilePickerModel {
@@ -52,29 +51,19 @@ func newProfilePickerScreen(ctx *AppContext) *profilePickerModel {
 		}
 	}
 
-	// Short-circuit: if there's exactly one profile AND the user hasn't
-	// explicitly picked a different one before, auto-advance. This
-	// avoids a "pick default (the only option)" keystroke on every
-	// machine #1 fresh setup — the common path where the user just
-	// wants to start syncing.
-	if len(names) == 1 && (ctx.State.ActiveProfile == "" || ctx.State.ActiveProfile == names[0]) {
-		m.autoJoined = true
-	}
+	// NO auto-advance. v0.6.1's first attempt short-circuited on a
+	// single-profile repo, which silently made machine #2 setups
+	// stick on "default" and miss the "create a new profile" option.
+	// The correct behavior is always to show the picker — one
+	// keystroke of friction on machine #1 is the right tradeoff
+	// against silently wrong joins on machine #2+. Covered by
+	// TestProfilePickerNeverAutoAdvances.
 	return m
 }
 
 func (m *profilePickerModel) Title() string { return "Which profile is this machine?" }
 
-// autoFinishMsg fires once on Init when the single-profile short-
-// circuit kicks in. Handler applies the choice and advances to sync.
-type autoFinishMsg struct{}
-
-func (m *profilePickerModel) Init() tea.Cmd {
-	if m.autoJoined {
-		return func() tea.Msg { return autoFinishMsg{} }
-	}
-	return nil
-}
+func (m *profilePickerModel) Init() tea.Cmd { return nil }
 
 // CapturesEscape keeps esc from popping the screen while the user is
 // typing into the name field — it should cancel back to the picker
@@ -88,8 +77,6 @@ type profilePickerDoneMsg struct{ err error }
 
 func (m *profilePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case autoFinishMsg:
-		return m, m.finalizeAs(m.names[m.cur])
 	case profilePickerDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -206,9 +193,6 @@ func (m *profilePickerModel) finalizeCreating(name string) tea.Cmd {
 }
 
 func (m *profilePickerModel) View() string {
-	if m.autoJoined {
-		return theme.Hint.Render("joining profile " + m.names[m.cur] + "…")
-	}
 	var sb strings.Builder
 	if m.err != nil {
 		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
