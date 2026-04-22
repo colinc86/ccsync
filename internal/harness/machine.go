@@ -172,6 +172,17 @@ func (m *Machine) DryRun() sync.Plan {
 	return res.Plan
 }
 
+// Promote runs sync.PromotePath on this machine, moving a file in the
+// repo worktree from one profile's subtree to another and pushing the
+// result. repoRelPath is under the claude/ tree (e.g.
+// "claude/agents/foo.md").
+func (m *Machine) Promote(repoRelPath, from, to string) {
+	m.scenario.t.Helper()
+	if err := sync.PromotePath(context.Background(), m.inputs(false), repoRelPath, from, to); err != nil {
+		m.scenario.t.Fatalf("machine %s promote: %v", m.Name, err)
+	}
+}
+
 // SyncAndResolveAll runs a sync; if conflicts are produced, resolves
 // them all to the given side (local or remote) and re-applies. Returns
 // the final result. Tests that want per-path resolutions should use

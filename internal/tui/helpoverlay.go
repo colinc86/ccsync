@@ -66,8 +66,19 @@ var helpOverlayContent = []helpSection{
 		Title: "browse tracked files",
 		Rows: []helpRow{
 			{"space", "toggle profile exclude"},
+			{"p", "promote file to default (shared across profiles)"},
 			{"i", "add to .syncignore"},
 			{"w", "why — trace rules"},
+		},
+	},
+	{
+		Title: "review screen (pre-push)",
+		Rows: []helpRow{
+			{"space / x", "toggle allow / deny"},
+			{"p", "promote to default (push item will share across profiles)"},
+			{"a", "allow all"},
+			{"d", "deny all"},
+			{"enter", "apply"},
 		},
 	},
 	{

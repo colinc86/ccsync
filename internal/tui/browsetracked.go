@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/discover"
 	"github.com/colinc86/ccsync/internal/ignore"
+	syncpkg "github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
 	"github.com/colinc86/ccsync/internal/why"
 )
@@ -40,6 +42,11 @@ type browseTrackedModel struct {
 	ignoreTarget string // the path the user chose to act on
 	ignoreChoice int    // cursor in the choose-menu
 	patIn        textinput.Model
+
+	// promote confirm state — triggered by `p` on a highlighted row.
+	// promotingPath is non-empty while waiting for y/N.
+	promotingPath string
+	promoting     bool // busy flag while PromotePath runs
 }
 
 type ignoreStage int
@@ -90,7 +97,33 @@ func (m *browseTrackedModel) Init() tea.Cmd {
 }
 
 func (m *browseTrackedModel) CapturesEscape() bool {
-	return m.filtering || m.ignoring != ignoreOff
+	return m.filtering || m.ignoring != ignoreOff || m.promotingPath != ""
+}
+
+// browsePromoteDoneMsg is emitted when a browse-initiated PromotePath
+// finishes. Distinct from syncpkg's promotesDoneMsg so the sync
+// screen's handler and browse's handler don't clash.
+type browsePromoteDoneMsg struct{ err error }
+
+// runBrowsePromote fires PromotePath from the browse screen, moving
+// the file at repoRelPath (e.g. "claude/skills/foo.md") from the
+// active profile to "default". The destination is always "default"
+// in v0.6.0 — the canonical share target.
+func runBrowsePromote(ctx *AppContext, relPath string) tea.Cmd {
+	return func() tea.Msg {
+		in, err := buildSyncInputs(ctx, false)
+		if err != nil {
+			return browsePromoteDoneMsg{err: err}
+		}
+		active := ctx.State.ActiveProfile
+		if active == "" {
+			active = "default"
+		}
+		if err := syncpkg.PromotePath(context.Background(), in, relPath, active, "default"); err != nil {
+			return browsePromoteDoneMsg{err: err}
+		}
+		return browsePromoteDoneMsg{}
+	}
 }
 
 func loadBrowseEntries(ctx *AppContext) tea.Cmd {
@@ -173,6 +206,15 @@ func (m *browseTrackedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyFilter()
 		return m, nil
 
+	case browsePromoteDoneMsg:
+		m.promoting = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.message = "promoted to default (shared across profiles)"
+		}
+		return m, loadBrowseEntries(m.ctx)
+
 	case tea.KeyMsg:
 		if m.filtering {
 			switch msg.String() {
@@ -221,6 +263,34 @@ func (m *browseTrackedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ignoreChoice = 0
 			m.err = nil
 			return m, nil
+		case "p":
+			// Promote: move the file from the active profile's subtree
+			// to "default" in the repo, so every profile that extends
+			// default picks it up. Asks for y/N confirmation since it
+			// commits + pushes immediately.
+			if len(m.filtered) == 0 {
+				return m, nil
+			}
+			active := m.ctx.State.ActiveProfile
+			if active == "" || active == "default" {
+				m.err = fmt.Errorf("already on the default profile — nothing to promote")
+				return m, nil
+			}
+			m.promotingPath = m.entries[m.filtered[m.cursor]].RelPath
+			m.err = nil
+			return m, nil
+		case "y":
+			if m.promotingPath != "" {
+				target := m.promotingPath
+				m.promotingPath = ""
+				m.promoting = true
+				return m, runBrowsePromote(m.ctx, target)
+			}
+		case "n":
+			if m.promotingPath != "" {
+				m.promotingPath = ""
+				return m, nil
+			}
 		case "w":
 			// "why" — used to be `?` but we reserved that for the global
 			// help overlay. `w` is a simple mnemonic for "why is this
@@ -527,10 +597,22 @@ func (m *browseTrackedModel) View() string {
 	if m.loading {
 		return m.spin.View() + " " + theme.Hint.Render("walking local Claude config…")
 	}
+	if m.promoting {
+		return theme.Hint.Render("promoting to default (committing + pushing)…")
+	}
 	if m.err != nil {
 		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
 	} else if m.message != "" {
 		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
+	}
+	if m.promotingPath != "" {
+		fmt.Fprintf(&sb, "%s %s\n", theme.Warn.Render("promote"), m.promotingPath)
+		sb.WriteString(theme.Hint.Render(
+			"moves this file from profiles/"+m.ctx.State.ActiveProfile+
+				"/ to profiles/default/ in the repo so every profile\n"+
+				"that extends default picks it up on next sync.") + "\n\n")
+		sb.WriteString(theme.Primary.Render("y") + " confirm   " + theme.Hint.Render("n cancel"))
+		return sb.String()
 	}
 	if m.ignoring != ignoreOff {
 		return sb.String() + m.renderIgnoreFlow()
@@ -583,6 +665,7 @@ func (m *browseTrackedModel) View() string {
 
 	sb.WriteString("\n" +
 		theme.Primary.Render("space ") + "toggle • " +
+		theme.Primary.Render("p ") + "promote to default • " +
 		theme.Primary.Render("i ") + "syncignore • " +
 		theme.Primary.Render("w ") + "why • " +
 		theme.Primary.Render("/ ") + "filter • " +

@@ -23,6 +23,24 @@ type syncModel struct {
 	eventCh   chan sync.Event
 	doneCh    chan doneMsg
 	onlyPaths map[string]bool // if non-nil, this sync is a selective one-shot
+
+	// pendingPromotes is the list of files the user tagged for promote
+	// in the review screen. Run serially after the main sync completes
+	// (and only if it committed successfully without conflicts).
+	pendingPromotes []promoteIntent
+	promoteErr      error
+	promoteRan      bool
+}
+
+// promoteIntent is the information a syncModel needs to run
+// sync.PromotePath after the main sync finishes: the path being
+// promoted and the source profile (destination is currently always
+// the user's "shared" base — resolved at execution time via the
+// active profile's extends chain).
+type promoteIntent struct {
+	RepoRelPath string // "claude/skills/foo.md"
+	From        string // source profile name (usually the active one)
+	To          string // destination profile name
 }
 
 type doneMsg struct {
@@ -39,6 +57,16 @@ type startedMsg struct {
 
 func newSync(ctx *AppContext) *syncModel {
 	return &syncModel{ctx: ctx, spin: newSpinner()}
+}
+
+// newSyncWithPromotes builds a syncModel that runs the usual sync and
+// then promotes each of the named paths from source → dest profile.
+// Used by the review screen to queue "share this file with other
+// profiles after the push lands."
+func newSyncWithPromotes(ctx *AppContext, promotes []promoteIntent) *syncModel {
+	m := newSync(ctx)
+	m.pendingPromotes = promotes
+	return m
 }
 
 func (m *syncModel) Title() string { return "Syncing" }
@@ -64,6 +92,30 @@ func startSync(ctx *AppContext, onlyPaths map[string]bool) tea.Cmd {
 			doneCh <- doneMsg{res: res, err: err}
 		}()
 		return startedMsg{events: events, done: doneCh}
+	}
+}
+
+// promotesDoneMsg fires once every queued promote has run (or bailed
+// on the first error). Carries the first error if any.
+type promotesDoneMsg struct{ err error }
+
+// runPromotes kicks off a goroutine-backed command that runs each
+// pending promote serially. Order is preserved because the underlying
+// git operations have to commit sequentially anyway. If any step
+// fails we stop and surface the error; remaining items are left as
+// local overrides, which the user can retry from Browse Tracked Files.
+func runPromotes(ctx *AppContext, intents []promoteIntent) tea.Cmd {
+	return func() tea.Msg {
+		in, err := buildSyncInputs(ctx, false)
+		if err != nil {
+			return promotesDoneMsg{err: err}
+		}
+		for _, p := range intents {
+			if err := sync.PromotePath(context.Background(), in, p.RepoRelPath, p.From, p.To); err != nil {
+				return promotesDoneMsg{err: err}
+			}
+		}
+		return promotesDoneMsg{}
 	}
 }
 
@@ -108,6 +160,17 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TUI's in-memory copy so Home + status bar reflect the new state,
 		// and recompute the cached plan so push/pull counts are fresh.
 		m.ctx.RefreshState()
+		// If the review screen queued any promotes, run them now that
+		// the main sync committed. Only runs once per syncModel via
+		// promoteRan; subsequent plan-refresh cycles don't re-fire.
+		if !m.promoteRan && len(m.pendingPromotes) > 0 && msg.err == nil {
+			m.promoteRan = true
+			return m, tea.Batch(runPromotes(m.ctx, m.pendingPromotes), refreshPlanCmd(m.ctx))
+		}
+		return m, refreshPlanCmd(m.ctx)
+	case promotesDoneMsg:
+		m.promoteErr = msg.err
+		// Re-refresh so the dashboard reflects the promote commit.
 		return m, refreshPlanCmd(m.ctx)
 	case tea.KeyMsg:
 		if !m.done {

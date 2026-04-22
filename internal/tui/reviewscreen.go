@@ -14,18 +14,29 @@ import (
 )
 
 // reviewItem is one reviewable action — a push or pull of a specific
-// file — with an Allowed toggle the user flips before applying. Built
-// from sync.FileAction but decoupled so MCP sub-JSON items (added in a
+// file — with toggles the user flips before applying. Built from
+// sync.FileAction but decoupled so MCP sub-JSON items (added in a
 // follow-up commit) can use the same UI.
+//
+// Three user-facing states per push item:
+//   - Allowed=true, Promote=false: push to active profile (default)
+//   - Allowed=true, Promote=true: push, then promote to default
+//     so every other profile that extends default sees it
+//   - Allowed=false: deny (adds to DeniedPaths, file skipped forever)
+//
+// Pull items only have Allowed/Denied; Promote isn't meaningful for
+// an incoming action.
 type reviewItem struct {
 	Path        string
 	Category    string
 	DirectionUp bool // true = push (outbound), false = pull (inbound)
 	Summary     string
 	Allowed     bool // default true; user toggles to deny
+	Promote     bool // push items only: after push, promote to default profile
 
 	// RepoRelPath is the path under the active profile's prefix
-	// ("claude/commands/foo.md"), suitable for adding to DeniedPaths.
+	// ("claude/commands/foo.md"), suitable for adding to DeniedPaths
+	// or passing to sync.PromotePath.
 	RepoRelPath string
 }
 
@@ -116,7 +127,13 @@ func (m *reviewScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Persistence done — dispatch the real sync. The newly-saved
-		// DeniedPaths are picked up by sync.Run on re-discovery.
+		// DeniedPaths are picked up by sync.Run on re-discovery. Any
+		// items flagged for promote ride along; the sync screen runs
+		// PromotePath for each after the main sync commit lands.
+		promotes := m.collectPromotes()
+		if len(promotes) > 0 {
+			return m, switchTo(newSyncWithPromotes(m.ctx, promotes))
+		}
 		return m, switchTo(newSync(m.ctx))
 	case tea.KeyMsg:
 		if m.applying {
@@ -135,6 +152,15 @@ func (m *reviewScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.items) > 0 {
 				m.items[m.cursor].Allowed = !m.items[m.cursor].Allowed
 			}
+		case "p":
+			// Promote toggle — push items only. Denied items can't be
+			// promoted (nothing to promote) so we ignore the key there.
+			if len(m.items) > 0 {
+				it := &m.items[m.cursor]
+				if it.DirectionUp && it.Allowed {
+					it.Promote = !it.Promote
+				}
+			}
 		case "a":
 			// Allow all
 			for i := range m.items {
@@ -144,6 +170,7 @@ func (m *reviewScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Deny all
 			for i := range m.items {
 				m.items[i].Allowed = false
+				m.items[i].Promote = false
 			}
 		case "enter":
 			m.applying = true
@@ -151,6 +178,34 @@ func (m *reviewScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// collectPromotes returns one promoteIntent per item the user tagged
+// for promote in the review screen. Destination is always "default"
+// in v0.6.0 — the canonical "share with everyone" target. Browse
+// Tracked Files can promote to arbitrary profiles for users with
+// more elaborate extends chains.
+func (m *reviewScreenModel) collectPromotes() []promoteIntent {
+	active := m.ctx.State.ActiveProfile
+	if active == "" {
+		active = "default"
+	}
+	var out []promoteIntent
+	for _, it := range m.items {
+		if !it.Allowed || !it.Promote {
+			continue
+		}
+		if active == "default" {
+			// Nothing to promote to; user is already on the share root.
+			continue
+		}
+		out = append(out, promoteIntent{
+			RepoRelPath: it.RepoRelPath,
+			From:        active,
+			To:          "default",
+		})
+	}
+	return out
 }
 
 func (m *reviewScreenModel) commit() tea.Cmd {
@@ -179,20 +234,32 @@ func (m *reviewScreenModel) View() string {
 		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
 	}
 
-	allowed, denied := 0, 0
+	allowed, denied, promoted := 0, 0, 0
 	for _, it := range m.items {
-		if it.Allowed {
-			allowed++
-		} else {
+		if !it.Allowed {
 			denied++
+			continue
+		}
+		allowed++
+		if it.Promote {
+			promoted++
 		}
 	}
-	fmt.Fprintf(&sb, "%s  %s\n\n",
+	parts := []string{
 		theme.Good.Render(fmt.Sprintf("allow %d", allowed)),
-		theme.Warn.Render(fmt.Sprintf("deny %d", denied)))
+		theme.Warn.Render(fmt.Sprintf("deny %d", denied)),
+	}
+	if promoted > 0 {
+		parts = append(parts, theme.Primary.Render(fmt.Sprintf("promote %d", promoted)))
+	}
+	sb.WriteString(strings.Join(parts, "  ") + "\n\n")
 
 	cursorIdx := m.cursor
 	seen := 0
+	active := m.ctx.State.ActiveProfile
+	if active == "" {
+		active = "default"
+	}
 	for _, g := range m.grouped {
 		sb.WriteString(theme.Secondary.Render(category.Label(g.Category)) + "\n")
 		for _, idx := range g.Items {
@@ -209,12 +276,25 @@ func (m *reviewScreenModel) View() string {
 			if seen == cursorIdx {
 				cursor = theme.Primary.Render("▸ ")
 			}
-			fmt.Fprintf(&sb, "%s%s %s %s\n", cursor, mark, dir, it.Summary)
+			// Destination label: for push items, show where the file
+			// will land — active profile by default, "default
+			// (shared)" when promoted. Pull items don't get a dest
+			// column (the incoming file just lands locally).
+			var dest string
+			switch {
+			case !it.DirectionUp:
+				dest = ""
+			case it.Promote:
+				dest = "  " + theme.Primary.Render("→ default (shared)")
+			default:
+				dest = "  " + theme.Hint.Render("→ "+active)
+			}
+			fmt.Fprintf(&sb, "%s%s %s %s%s\n", cursor, mark, dir, it.Summary, dest)
 			seen++
 		}
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(theme.Hint.Render("↑↓ move · space/x toggle · a allow all · d deny all · enter apply"))
+	sb.WriteString(theme.Hint.Render("↑↓ move · space/x toggle allow · p promote to default · a allow all · d deny all · enter apply"))
 	return sb.String()
 }
