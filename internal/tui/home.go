@@ -98,9 +98,11 @@ func (m *homeModel) rebuildMoreItems() {
 			onEnter: func() tea.Cmd { return switchTo(newSuggestions(m.ctx)) },
 		})
 	}
-	// Profiles only shows up in the drawer when there's an actual choice
-	// to be made — one profile is the default/invisible case.
-	if bootstrapped && len(m.ctx.Config.Profiles) > 1 {
+	// Profiles is always in the drawer once we're bootstrapped — the
+	// v0.3 "hide when only one profile" rule was wrong because it
+	// locked users out of the screen they needed to *create* a second
+	// profile. Clutter tradeoff was small; lockout tradeoff wasn't.
+	if bootstrapped {
 		items = append(items, homeChoice{
 			key:     "p",
 			label:   "Profiles",

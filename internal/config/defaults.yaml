@@ -96,6 +96,8 @@ jsonFiles:
 defaultSyncignore: |
   # ephemeral / machine-local scratch
   .current-session-id
+  .last-seen-version
+  .last-*
   .DS_Store
   .lock
   *.bak
