@@ -179,6 +179,36 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 
 	var items []Item
 	for rel := range seen {
+		// claude.json is special: its mcpServers keys each have an
+		// independent sync identity, so we compare per-entry
+		// instead of rubber-stamping every server with the file-
+		// level status. The settings summary still inherits the
+		// whole-file status because it's "everything in claude.json
+		// that isn't mcpServers" — if those keys drift, the
+		// summary row legitimately flips to pending-push.
+		if rel == "claude.json" {
+			var localData, repoData []byte
+			if e, ok := local[rel]; ok {
+				localData = e.Bytes
+			}
+			if r, ok := repo[rel]; ok {
+				repoData = r
+			}
+			fileStatus := statusFor(rel, local, repo, excluded)
+			items = append(items, extractMCPServers(
+				localData, repoData, excluded[rel], rel)...)
+			// Metadata for the settings summary: local preferred,
+			// repo fallback (same rule as below for non-JSON rels).
+			summaryData := localData
+			if summaryData == nil {
+				summaryData = repoData
+			}
+			if summary := extractSettingsSummary(summaryData, fileStatus, rel); summary != nil {
+				items = append(items, *summary)
+			}
+			continue
+		}
+
 		status := statusFor(rel, local, repo, excluded)
 		// The bytes we'll extract metadata from: prefer local
 		// (most recent authoritative copy from the user's POV);
@@ -222,19 +252,10 @@ func statusFor(rel string, local map[string]*localEntry, repo map[string][]byte,
 }
 
 // itemsFrom dispatches a single rel-path to the right extractor.
-// One rel may produce multiple Items (mcpServers splits a
-// claude.json into N server Items + 1 settings Item). Everything
-// else produces exactly one Item.
+// Claude's .json is handled up in buildItems because its MCP
+// servers need per-entry diffing; this function handles the simpler
+// one-file-one-item shapes.
 func itemsFrom(rel string, data []byte, status Status) []Item {
-	switch rel {
-	case "claude.json":
-		out := extractMCPServers(data, status, rel)
-		if summary := extractSettingsSummary(data, status, rel); summary != nil {
-			out = append(out, *summary)
-		}
-		return out
-	}
-
 	kind, cat := kindAndCategory(rel)
 	switch kind {
 	case KindSkill, KindCommand, KindAgent, KindMemory, KindClaudeMD:

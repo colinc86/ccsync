@@ -65,13 +65,17 @@ func TestExtractMarkdownMeta_FilenameFallback(t *testing.T) {
 // no description field is present on an MCP entry.
 func TestExtractMCPServers_Basic(t *testing.T) {
 	data := []byte(`{"mcpServers":{"gemini":{"command":"gemini-mcp","args":["--model","gemini-pro"]},"playwright":{"command":"npx","args":["playwright-mcp"]}}}`)
-	items := extractMCPServers(data, StatusSynced, "claude.json")
+	// Local and repo identical → both servers synced.
+	items := extractMCPServers(data, data, false, "claude.json")
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
 	}
 	// Alphabetical by name.
 	if items[0].Title != "gemini" {
 		t.Errorf("first title = %q, want gemini", items[0].Title)
+	}
+	if items[0].Status != StatusSynced {
+		t.Errorf("gemini status = %q, want synced", items[0].Status.String())
 	}
 	if items[1].Description != "runs `playwright-mcp` via npx" {
 		t.Errorf("npx synth = %q", items[1].Description)
@@ -83,7 +87,7 @@ func TestExtractMCPServers_Basic(t *testing.T) {
 // over command-synthesis.
 func TestExtractMCPServers_WithExplicitDescription(t *testing.T) {
 	data := []byte(`{"mcpServers":{"gemini":{"command":"gemini-mcp","description":"Embedding + retrieval"}}}`)
-	items := extractMCPServers(data, StatusSynced, "claude.json")
+	items := extractMCPServers(data, data, false, "claude.json")
 	if len(items) != 1 || items[0].Description != "Embedding + retrieval" {
 		t.Errorf("unexpected items: %+v", items)
 	}
@@ -112,6 +116,80 @@ func TestExtractSettingsSummary(t *testing.T) {
 	}
 	if !containsAll(item.Description, "autoUpdates", "bar", "baz", "editorMode", "foo") {
 		t.Errorf("description missing expected keys: %q", item.Description)
+	}
+}
+
+// TestInspect_MCPServerStatusIsPerEntry pins the per-server status
+// computation: an MCP server whose own JSON entry is byte-identical
+// in local vs repo claude.json must show StatusSynced even when the
+// rest of the file has drifted. The pre-fix behaviour was to stamp
+// every server with the whole-file status, so a single local-only
+// `theme` change silently marked every synced MCP server as
+// "pending push" — users saw the gemini server stuck pending from
+// first launch and never returning to synced, which is what
+// prompted the v0.8.1 report.
+func TestInspect_MCPServerStatusIsPerEntry(t *testing.T) {
+	tmp := t.TempDir()
+	claudeDir := filepath.Join(tmp, "home", ".claude")
+	claudeJSON := filepath.Join(tmp, "home", ".claude.json")
+	repoPath := filepath.Join(tmp, "repo")
+
+	writeFile := func(path, content string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Local: gemini MCP + a theme override that the repo's copy
+	// doesn't know about yet. Repo: same gemini, older theme.
+	writeFile(claudeJSON,
+		`{"theme":"dark","mcpServers":{"gemini":{"command":"gemini-mcp"}}}`)
+	writeFile(filepath.Join(repoPath, "profiles/default/claude.json"),
+		`{"theme":"light","mcpServers":{"gemini":{"command":"gemini-mcp"}}}`)
+
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &state.State{ActiveProfile: "default", LastSyncedSHA: map[string]string{}}
+	v, err := Inspect(Inputs{
+		Config: cfg, State: st,
+		ClaudeDir: claudeDir, ClaudeJSON: claudeJSON, RepoPath: repoPath,
+	})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+
+	var gotGemini *Item
+	var gotSettings *Item
+	for _, s := range v.Sections {
+		for i := range s.Items {
+			it := &s.Items[i]
+			if it.Kind == KindMCPServer && it.Title == "gemini" {
+				gotGemini = it
+			}
+			if it.Kind == KindSettings {
+				gotSettings = it
+			}
+		}
+	}
+	if gotGemini == nil {
+		t.Fatal("expected a gemini MCP server item")
+	}
+	if gotGemini.Status != StatusSynced {
+		t.Errorf("gemini MCP status = %q, want synced — its entry is byte-identical across local and repo; the theme drift in the rest of claude.json should not contaminate per-server status",
+			gotGemini.Status.String())
+	}
+	// The settings summary SHOULD still flag pending-push because
+	// the non-mcp portion of claude.json genuinely differs.
+	if gotSettings == nil {
+		t.Fatal("expected a settings summary item")
+	}
+	if gotSettings.Status != StatusPendingPush {
+		t.Errorf("settings status = %q, want pending push (theme actually differs)", gotSettings.Status.String())
 	}
 }
 

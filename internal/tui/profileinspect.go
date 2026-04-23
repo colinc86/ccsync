@@ -364,10 +364,10 @@ func (m *profileInspectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "w":
 			it := m.cursorItem()
-			if it == nil || it.Kind == profileinspect.KindMCPServer {
+			if it == nil {
 				return m, nil
 			}
-			target := it.Path
+			target := whyTargetForItem(*it)
 			syncignore := m.ctx.Config.DefaultSyncignore
 			if data, err := os.ReadFile(filepath.Join(m.ctx.RepoPath, ".syncignore")); err == nil {
 				syncignore = string(data)
@@ -677,6 +677,21 @@ func (m *profileInspectModel) View() string {
 		{cap: "r", label: "refresh"},
 	}))
 	return sb.String()
+}
+
+// whyTargetForItem translates a profileinspect.Item.Path into the
+// target string why.Explain accepts. Regular rel-paths pass through
+// unchanged; MCP-server synthetic paths ("claude.json#mcpServers.x")
+// convert to the file+json-key form why.Explain parses via
+// splitJSONTarget ("claude.json:$.mcpServers.x") so the trace can
+// actually reach the per-key rule lookup in jsonFiles rules.
+func whyTargetForItem(it profileinspect.Item) string {
+	if hashIdx := strings.Index(it.Path, "#"); hashIdx > 0 {
+		file := it.Path[:hashIdx]
+		key := it.Path[hashIdx+1:]
+		return file + ":$." + key
+	}
+	return it.Path
 }
 
 // countItemRows returns how many non-header rows live in visible —

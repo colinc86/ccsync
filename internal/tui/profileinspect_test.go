@@ -4,7 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/profileinspect"
+	"github.com/colinc86/ccsync/internal/state"
 )
 
 // TestInspectorRendersSectionsAndChips pins the inspector layout:
@@ -108,5 +112,90 @@ func TestInspectorCursorSkipsHeaders(t *testing.T) {
 	m.nudgeCursor(1)
 	if m.cursor != 3 || m.flat[m.cursor].Header {
 		t.Errorf("down from idx 1 should skip header and land on idx 3; got %d", m.cursor)
+	}
+}
+
+// TestInspectorWhyOnSkillSetsMessage pins that pressing `w` on a
+// cursored file-backed item calls why.Explain and puts a trace into
+// m.message so the next View() renders it. The user report from
+// v0.8.0 was that `w` appeared to do nothing — either because the
+// handler silently returned early or because the trace never made
+// it into rendered output. This test holds the contract both ways:
+// after the keystroke, the message is populated AND the rendered
+// View contains its text.
+func TestInspectorWhyOnSkillSetsMessage(t *testing.T) {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &state.State{ActiveProfile: "default", LastSyncedSHA: map[string]string{}}
+	ctx := &AppContext{Config: cfg, State: st, ClaudeDir: "/tmp/ccsync-inspect-why", ClaudeJSON: "/tmp/ccsync-inspect-why.json"}
+	m := &profileInspectModel{
+		ctx: ctx,
+		view: &profileinspect.View{
+			Sections: []profileinspect.Section{
+				{Kind: profileinspect.KindSkill, Label: "Skills", Items: []profileinspect.Item{
+					{Title: "research", Path: "claude/skills/research/SKILL.md", Kind: profileinspect.KindSkill, Status: profileinspect.StatusSynced},
+				}},
+			},
+		},
+	}
+	m.flat = flatten(m.view)
+	m.nudgeCursor(0) // land on the skill row
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	pm := updated.(*profileInspectModel)
+	if pm.err != nil {
+		t.Fatalf("why handler set err = %v — why.Explain should return a Trace, not an error, for a valid repo-relative path", pm.err)
+	}
+	if pm.message == "" {
+		t.Fatal("after pressing w on a skill, m.message should carry the why-trace; it's empty, which is what the user sees as 'why doesn't work'")
+	}
+	if !strings.Contains(pm.message, "path:") || !strings.Contains(pm.message, "profile:") {
+		t.Errorf("m.message doesn't look like a why-trace: %q", pm.message)
+	}
+
+	// And the rendered view must surface that message — setting it
+	// without rendering it would produce the same user-visible
+	// symptom.
+	out := pm.View()
+	if !strings.Contains(out, "path:") {
+		t.Error("View() output doesn't contain the why-trace lines; message isn't making it to the screen")
+	}
+}
+
+// TestInspectorWhyOnMCPServer pins that `w` on an MCP server entry
+// actually surfaces a trace instead of being silently ignored. Pre-
+// v0.8.1 the handler early-returned for every MCP item because
+// Item.Path uses a `#mcpServers.<name>` suffix that why.Explain
+// doesn't speak; the user pressed `w` on gemini, saw nothing, and
+// reasonably concluded the feature was broken.
+func TestInspectorWhyOnMCPServer(t *testing.T) {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &state.State{ActiveProfile: "default", LastSyncedSHA: map[string]string{}}
+	ctx := &AppContext{Config: cfg, State: st, ClaudeDir: "/tmp/ccsync-inspect-why-mcp", ClaudeJSON: "/tmp/ccsync-inspect-why-mcp.json"}
+	m := &profileInspectModel{
+		ctx: ctx,
+		view: &profileinspect.View{
+			Sections: []profileinspect.Section{
+				{Kind: profileinspect.KindMCPServer, Label: "MCP Servers", Items: []profileinspect.Item{
+					{Title: "gemini", Path: "claude.json#mcpServers.gemini", Kind: profileinspect.KindMCPServer, Status: profileinspect.StatusSynced},
+				}},
+			},
+		},
+	}
+	m.flat = flatten(m.view)
+	m.nudgeCursor(0)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	pm := updated.(*profileInspectModel)
+	if pm.message == "" {
+		t.Fatal("pressing w on an MCP server should produce a trace; the handler silently returning is the pre-v0.8.1 bug")
+	}
+	if !strings.Contains(pm.message, "mcpServers.gemini") && !strings.Contains(pm.message, "gemini") {
+		t.Errorf("trace should name the server key, got: %q", pm.message)
 	}
 }
