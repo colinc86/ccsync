@@ -8,37 +8,39 @@ import (
 	"github.com/colinc86/ccsync/internal/theme"
 )
 
-// statusBar renders a single-line bottom status line. Always shows active
-// profile + whether a repo is configured; optional extras (host class,
-// exclude count, hint) filled in automatically from ctx.
+// statusBar renders a single-line bottom line of secondary context:
+// host class, exclude counts, missing-repo warnings. The active
+// profile + freshness badge live in the app-shell header now, so the
+// status bar carries only the information the header doesn't —
+// local-machine config that's invisible but consequential at sync
+// time. Returns empty when there's nothing to report, so the app
+// shell doesn't reserve a blank line for noise.
 func statusBar(ctx *AppContext) string {
 	if ctx == nil {
 		return ""
 	}
 	profile := ctx.State.ActiveProfile
 	if profile == "" {
-		profile = "(none)"
+		profile = "default"
 	}
 
-	parts := []string{"profile: " + theme.Primary.Render(profile)}
-
+	var parts []string
 	if ctx.State.HostClass != "" {
 		parts = append(parts, "host-class: "+theme.Secondary.Render(ctx.State.HostClass))
 	}
-
-	// Show profile exclude count to make host-class filtering visible.
 	if resolved, err := config.EffectiveProfile(ctx.Config, profile); err == nil {
 		if n := len(resolved.PathExcludes); n > 0 {
 			parts = append(parts, fmt.Sprintf("excludes: %s", theme.Warn.Render(fmt.Sprintf("%d", n))))
 		}
 	}
-
-	if ctx.State.SyncRepoURL == "" {
-		parts = append(parts, theme.Warn.Render("no repo"))
+	if n := len(ctx.State.DeniedPaths); n > 0 {
+		parts = append(parts, fmt.Sprintf("denied: %s", theme.Warn.Render(fmt.Sprintf("%d", n))))
 	}
-	// The freshness badge used to live here too; as of v0.3 it's rendered
-	// in the top header by AppModel.View so there's a single source of
-	// truth for "are we in sync" at a glance.
-
+	if ctx.State.SyncRepoURL == "" {
+		parts = append(parts, theme.Warn.Render("no repo configured"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
 	return theme.Hint.Render(strings.Join(parts, " • "))
 }

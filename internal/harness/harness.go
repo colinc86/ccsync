@@ -16,9 +16,11 @@ import (
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/colinc86/ccsync/internal/config"
+	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/secrets"
 )
 
@@ -66,8 +68,18 @@ func NewScenario(t *testing.T, opts ...ScenarioOption) *Scenario {
 
 	root := t.TempDir()
 	bare := filepath.Join(root, "bare.git")
-	if _, err := gogit.PlainInit(bare, true); err != nil {
+	br, err := gogit.PlainInit(bare, true)
+	if err != nil {
 		t.Fatalf("bare init: %v", err)
+	}
+	// Point the bare's HEAD at refs/heads/main so a later Clone
+	// resolves cleanly after our first push — go-git's PlainInit
+	// defaults to master, but ccsync pushes to main (gitx.DefaultBranch),
+	// and a HEAD→master pointer to a nonexistent ref would leave
+	// clone callers with "reference not found."
+	headRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(gitx.DefaultBranch))
+	if err := br.Storer.SetReference(headRef); err != nil {
+		t.Fatalf("set bare HEAD: %v", err)
 	}
 
 	cfg, err := config.LoadDefault()
@@ -95,7 +107,7 @@ func (s *Scenario) BareHead() string {
 	if err != nil {
 		s.t.Fatalf("open bare: %v", err)
 	}
-	ref, err := r.Reference("refs/heads/master", true)
+	ref, err := r.Reference("refs/heads/"+gitx.DefaultBranch, true)
 	if err != nil {
 		return ""
 	}
@@ -110,7 +122,7 @@ func (s *Scenario) BareFile(path string) ([]byte, bool) {
 	if err != nil {
 		s.t.Fatalf("open bare: %v", err)
 	}
-	ref, err := r.Reference("refs/heads/master", true)
+	ref, err := r.Reference("refs/heads/"+gitx.DefaultBranch, true)
 	if err != nil {
 		return nil, false
 	}
@@ -139,7 +151,7 @@ func (s *Scenario) BareCommits() []string {
 	if err != nil {
 		s.t.Fatalf("open bare: %v", err)
 	}
-	ref, err := r.Reference("refs/heads/master", true)
+	ref, err := r.Reference("refs/heads/"+gitx.DefaultBranch, true)
 	if err != nil {
 		return nil
 	}

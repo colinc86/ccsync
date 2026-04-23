@@ -88,6 +88,15 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		}
 	}
 
+	// Self-heal .gitignore on repos that predate the iteration-33 fix.
+	// Without it, AddAll stages ccsync.yaml.bak (the atomic-save rollback
+	// sibling) and any *.tmp interrupted mid-rename, polluting every
+	// clone across the fleet. Writing it only when missing keeps user
+	// customisations intact on repos that already have one.
+	if err := ensureRepoGitignore(in.RepoPath); err != nil {
+		return Result{}, fmt.Errorf("ensure gitignore: %w", err)
+	}
+
 	manifestPath := filepath.Join(in.RepoPath, "manifest.json")
 	mf, err := manifest.Load(manifestPath, in.HostUUID)
 	if err != nil {
@@ -285,7 +294,21 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		}
 		excluded := profileExcluded(profileMatcher, path, profilePrefix)
 		denied := pathDenied(state, path, profilePrefix)
-		cat := category.Classify(strings.TrimPrefix(path, profilePrefix))
+		// Route claude.json changes through the MCPServers category
+		// when the only differing top-level key is "mcpServers" —
+		// honours the user's per-category review policy so adding a
+		// new MCP server can trigger a review prompt even though
+		// other claude.json edits stay on the GeneralSettings policy.
+		// Pre-v0.6.14 this classification was hardcoded to
+		// GeneralSettings, so configuring MCPServers.push=review
+		// silently did nothing for every user who tried.
+		rel := strings.TrimPrefix(path, profilePrefix)
+		var cat string
+		if rel == "claude.json" && category.MCPOnlyDiff(localData, remoteData) {
+			cat = category.MCPServers
+		} else {
+			cat = category.Classify(rel)
+		}
 		plan.Actions = append(plan.Actions, FileAction{
 			Path: path, LocalAbs: localAbs, Action: action,
 			ExcludedByProfile: excluded,
@@ -323,7 +346,20 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		case manifest.ActionDeleteRemote:
 			pendingRepoWrites[path] = nil
 		case manifest.ActionMerge:
-			merged, clean := mergeFile(path, nil, localData, remoteData)
+			// mtimes fuel the binary-LWW tie-break. Local: os.Stat of the
+			// file on disk; remote: the manifest's last-write record.
+			// Zero times mean "fall back to the other side" — safe, since
+			// a missing stat/manifest entry is a rare edge.
+			var localMT, remoteMT time.Time
+			if localAbs != "" {
+				if info, err := os.Stat(localAbs); err == nil {
+					localMT = info.ModTime()
+				}
+			}
+			if ent, ok := mf.Files[path]; ok {
+				remoteMT = ent.MTime
+			}
+			merged, clean := mergeFile(path, nil, localData, remoteData, localMT, remoteMT)
 			if !clean.Clean() {
 				// First sync for this profile: no prior base to merge
 				// against, so any "both sides differ" falls here. Since
@@ -504,12 +540,28 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		for path, data := range pendingRepoWrites {
 			if data == nil {
 				mf.Delete(path)
-			} else {
-				mf.Set(path, manifest.Entry{
-					SHA256: manifest.SHA256Bytes(data), Size: int64(len(data)),
-					MTime: now, LastModifiedBy: in.HostUUID,
-				})
+				continue
 			}
+			// Prefer the local file's real mtime over sync time — downstream
+			// machines need to tell "A edited the file an hour ago then
+			// synced" from "A edited five days ago and hasn't synced since"
+			// for binary LWW merges. Pre-fix every manifest entry was
+			// stamped time.Now(), so LWW always picked whichever side
+			// sync'd most recently, regardless of when the file was
+			// actually edited. Fall back to now for paths we can't map
+			// back to a local file (merged output that hasn't been
+			// written yet, edge repo-only metadata).
+			mt := now
+			localAbs := repoPathToLocal(path, in.Profile, in.ClaudeDir, in.ClaudeJSON)
+			if localAbs != "" {
+				if info, err := os.Stat(localAbs); err == nil {
+					mt = info.ModTime().UTC()
+				}
+			}
+			mf.Set(path, manifest.Entry{
+				SHA256: manifest.SHA256Bytes(data), Size: int64(len(data)),
+				MTime: mt, LastModifiedBy: in.HostUUID,
+			})
 		}
 		mf.UpdatedBy = in.HostUUID
 		if err := mf.Save(manifestPath); err != nil {
@@ -531,11 +583,23 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		}
 	}
 
-	// Advance state.LastSyncedSHA ONLY for full syncs. Selective syncs leave
-	// the base commit alone so the skipped files remain pending next time.
-	if !in.Selective() {
+	// Advance state.LastSyncedSHA ONLY for full syncs with no unresolved
+	// conflicts. Selective syncs leave the base commit alone so the skipped
+	// files remain pending next time. Unresolved conflicts do the same — if
+	// state advanced here, the next sync would see base==remote for the
+	// conflicted file (because SyncToRemote already aligned the worktree to
+	// remote), classify the user's still-divergent local bytes as a plain
+	// ActionPush, and silently overwrite the other machine's edit. Callers
+	// that want to resolve conflicts (the TUI conflict resolver) push their
+	// own commit and then advanceStateToHead; the CLI `ccsync sync` path
+	// returns with conflicts pending and nothing to advance toward.
+	if !in.Selective() && len(plan.Conflicts) == 0 {
 		if newHead, err := repo.HeadSHA(); err == nil && newHead != "" {
 			state.LastSyncedSHA[in.Profile] = newHead
+			if state.LastSyncedAt == nil {
+				state.LastSyncedAt = map[string]time.Time{}
+			}
+			state.LastSyncedAt[in.Profile] = time.Now().UTC()
 			if err := saveHostState(in.StateDir, state); err != nil {
 				return Result{}, fmt.Errorf("save state: %w", err)
 			}
@@ -560,7 +624,11 @@ type localFile struct {
 }
 
 // mergeFile picks the right merge strategy based on path extension and content.
-func mergeFile(path string, base, local, remote []byte) (merge.Result, merge.Result) {
+// localMTime / remoteMTime are only used on the binary fallback path for
+// last-write-wins tie-breaking; JSON and text merges are deterministic and
+// ignore them. Either may be the zero Time, in which case the other side
+// wins by definition (zero.After(non-zero) is false).
+func mergeFile(path string, base, local, remote []byte, localMTime, remoteMTime time.Time) (merge.Result, merge.Result) {
 	if isJSONPath(path) {
 		res, err := merge.JSON(base, local, remote)
 		if err != nil {
@@ -572,7 +640,7 @@ func mergeFile(path string, base, local, remote []byte) (merge.Result, merge.Res
 		res := merge.Text(string(base), string(local), string(remote))
 		return res, res
 	}
-	res := merge.Binary(local, time.Now(), remote, time.Now())
+	res := merge.Binary(local, localMTime, remote, remoteMTime)
 	return res, res
 }
 
@@ -683,6 +751,19 @@ func profileExcluded(m *ignore.Matcher, repoPath, profilePrefix string) bool {
 		return false
 	}
 	return m.Matches(rel)
+}
+
+// ensureRepoGitignore writes the default .gitignore at the repo root if
+// it isn't already present. Only writes when missing — never overwrites
+// an existing file, so users who want to broaden the ignore list can do
+// so without the next sync wiping their changes. See config.DefaultGitignore
+// for the rationale on what's excluded and why.
+func ensureRepoGitignore(repoPath string) error {
+	path := filepath.Join(repoPath, ".gitignore")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return os.WriteFile(path, config.DefaultGitignore(), 0o644)
 }
 
 // matchesSyncignore reports whether a repo path (profiles/<name>/<rel>)

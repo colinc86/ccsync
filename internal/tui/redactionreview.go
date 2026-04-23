@@ -95,20 +95,37 @@ func (m *redactionReviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *redactionReviewModel) View() string {
 	if len(m.paths) == 0 {
-		return theme.Good.Render("no missing secrets")
+		body := theme.Good.Bold(true).Render("✓ NO MISSING SECRETS") + "\n" +
+			theme.Hint.Render("every redacted placeholder resolved cleanly from the keychain")
+		return theme.CardClean.Width(56).Render(body)
 	}
 	var sb strings.Builder
+
+	// Progress chip showing saved vs pending — matches the
+	// conflict resolver's "N / M resolved" pattern.
+	saved := 0
+	for _, p := range m.paths {
+		if m.saved[p] {
+			saved++
+		}
+	}
+	chipStyle := theme.ChipNeutral
+	if saved == len(m.paths) {
+		chipStyle = theme.ChipGood
+	}
+	sb.WriteString(chipStyle.Render(
+		fmt.Sprintf("● %d / %d saved", saved, len(m.paths))) + "\n")
 	sb.WriteString(theme.Hint.Render(
-		"paste each secret; values go straight to the OS keychain (they never touch disk or the sync repo)") + "\n\n")
+		"values go straight to the OS keychain — never disk, never the sync repo") + "\n\n")
 
 	for i, p := range m.paths {
 		cursor := "  "
 		if m.cursor == i {
 			cursor = theme.Primary.Render("▸ ")
 		}
-		mark := theme.Warn.Render("pending")
+		mark := theme.ChipWarn.Render("pending")
 		if m.saved[p] {
-			mark = theme.Good.Render("saved  ")
+			mark = theme.ChipGood.Render(" saved ")
 		}
 		sb.WriteString(fmt.Sprintf("%s%s  %s\n", cursor, mark, p))
 	}
@@ -116,13 +133,19 @@ func (m *redactionReviewModel) View() string {
 	sb.WriteString("\n")
 	if m.input.Focused() {
 		sb.WriteString(theme.Secondary.Render("value: "))
-		sb.WriteString(m.input.View())
-		sb.WriteString("\n" + theme.Hint.Render("enter saves • esc cancels"))
+		sb.WriteString(m.input.View() + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "enter", label: "save", primary: true},
+			{cap: "esc", label: "cancel"},
+		}))
 	} else {
-		sb.WriteString(theme.Hint.Render("enter to type a value • ↑↓ move"))
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "enter", label: "type value", primary: true},
+			{cap: "↑↓", label: "move"},
+		}))
 	}
 	if m.err != nil {
-		sb.WriteString("\n" + theme.Bad.Render("error: "+m.err.Error()))
+		sb.WriteString("\n" + renderError(m.err))
 	}
 	return sb.String()
 }

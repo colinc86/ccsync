@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/colinc86/ccsync/internal/category"
+	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -101,15 +102,22 @@ func (m *policiesScreenModel) save() tea.Cmd {
 
 func (m *policiesScreenModel) View() string {
 	var sb strings.Builder
-	sb.WriteString(theme.Hint.Render(
-		"Per-category review policies. 'auto' syncs silently. 'review' pauses\n"+
-			"for manual allow/deny before each push or pull. 'never' skips entirely.") + "\n\n")
 
-	// Header
+	// Legend chips — give each policy its color identity upfront so
+	// the cell colors in the grid carry meaning.
+	sb.WriteString(theme.Hint.Render("per-category review policies") + "\n")
+	legend := []string{
+		theme.ChipGood.Render("auto") + " " + theme.Hint.Render("sync silently"),
+		theme.ChipWarn.Render("review") + " " + theme.Hint.Render("pause for allow/deny"),
+		theme.ChipBad.Render("never") + " " + theme.Hint.Render("skip entirely"),
+	}
+	sb.WriteString(strings.Join(legend, "  ") + "\n\n")
+
+	// Header row — secondary accents, right-padded to align with cells.
 	fmt.Fprintf(&sb, "  %-22s  %-10s  %-10s\n",
-		theme.Secondary.Render("category"),
-		theme.Secondary.Render("push"),
-		theme.Secondary.Render("pull"))
+		theme.Secondary.Bold(true).Render("category"),
+		theme.Secondary.Bold(true).Render("push"),
+		theme.Secondary.Bold(true).Render("pull"))
 
 	for i, cat := range category.All() {
 		cursor := "  "
@@ -122,9 +130,15 @@ func (m *policiesScreenModel) View() string {
 	}
 
 	if m.err != nil {
-		sb.WriteString("\n" + theme.Bad.Render("save failed: "+m.err.Error()))
+		sb.WriteString("\n" + theme.Bad.Render("save failed: "+gitx.Friendly(m.err)))
 	}
-	sb.WriteString("\n" + theme.Hint.Render("↑↓ row · ←→/tab column · enter/space cycle · esc back"))
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "enter", label: "cycle policy", primary: true},
+		{cap: "space", label: "cycle"},
+		{cap: "↑↓", label: "row"},
+		{cap: "←→", label: "column"},
+		{cap: "tab", label: "column"},
+	}))
 	return sb.String()
 }
 

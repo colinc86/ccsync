@@ -12,14 +12,32 @@ Sync a user's Claude Code configuration across machines via a git repo, with VSC
 ## Repo layout
 
 ```
-cmd/ccsync/         entry point; flag parsing + TUI bootstrap
+cmd/ccsync/         entry point; subcommand dispatch + TUI bootstrap
 internal/
-  config/           file discovery, manifest, .syncignore
-  profile/          named profiles (work / personal / …)
-  gitx/             clone/pull/commit/push wrappers (translate errors to plain English)
-  merge/            three-way merge engine
-  tui/              Bubble Tea screens
-  theme/            lipgloss styles, palette, adaptive color fallbacks
+  bootstrap/        first-run clone/init + state seeding
+  category/         classify paths (agents / skills / commands / claude_md / mcp_servers / …)
+  config/           ccsync.yaml load/save with .bak rollback; profile resolution
+  crypto/           chacha20-poly1305 + scrypt; optional repo encryption
+  discover/         walk ~/.claude honoring .syncignore
+  doctor/           integrity checks + auto-fix for repo/snapshot/encryption state
+  gitx/             clone/pull/commit/push wrappers that translate errors to plain English
+  harness/          cross-machine sync-scenario fixtures (test-only)
+  humanize/         plural / path-tilde / relative-time formatters
+  ignore/           .syncignore matcher (gitignore-syntax wrapper)
+  jsonfilter/       JSONPath-lite include/exclude/redact engine
+  manifest/         per-commit file ledger (SHA / size / mtime / author)
+  merge/            three-way merge (text + JSON + binary-LWW)
+  profile/          profile CRUD with pre-switch snapshot safety
+  secrets/          OS keychain or file-backend secret storage
+  snapshot/         pre-sync local backups + rollback
+  state/            ~/.ccsync/state.json schema + atomic save
+  suggest/          rule-change proposals derived from the current plan
+  sync/             the orchestrator — Run, resolve, rollback, encryption migration
+  theme/            lipgloss styles + palette
+  tui/              Bubble Tea screens + AppContext
+  updater/          GitHub self-update (public + authenticated fallback)
+  watch/            fsnotify auto-sync loop
+  why/              rule-tracer for `ccsync why <path>`
 ```
 
 ## Scope (v1)
@@ -29,7 +47,10 @@ User-global only. No project-scoped `.claude/` yet — deferred.
 Tracked paths:
 - `~/.claude/` (entire tree, minus ignores)
 - `~/.claude.json` (if present)
-- `~/.mcp.json` (if present)
+
+MCP servers live inside `~/.claude.json` under `$.mcpServers` and are
+synced through that file's JSON merge rules. Project-scoped `.mcp.json`
+is out of scope per the v1 boundary (no project-scoped `.claude/`).
 
 `.syncignore` uses gitignore syntax. Default excludes:
 - `settings.local.json` (machine-local by definition)
@@ -37,13 +58,17 @@ Tracked paths:
 
 ## Merge strategy
 
-Per-file three-way compare: `base` = last-synced SHA recorded in manifest, `local` = on-disk, `remote` = repo HEAD.
+Per-file three-way compare:
+- `base` = the repo blob at `state.LastSyncedSHA[profile]` (this
+  machine's last-known consensus commit). First sync for a profile
+  has no base and takes-remote on any conflict.
+- `local` = current bytes on disk (or absent).
+- `remote` = current bytes at origin/master (post-fetch + reset).
 
 | File kind                              | Strategy                                                   |
 |----------------------------------------|------------------------------------------------------------|
-| JSON (`settings.json`, `.claude.json`, `.mcp.json`) | Deep merge. On structural conflict, TUI lets user pick per-key or hand-edit. |
-| Memory (`memory/*.md`)                 | Union append — memory is additive by design.               |
-| Agents / skills / commands / `CLAUDE.md` | Text three-way merge. Conflicts surface in TUI.          |
+| JSON (`settings.json`, `.claude.json`) | Deep merge. On structural conflict, TUI lets user pick per-key or hand-edit. |
+| Markdown (agents / skills / commands / CLAUDE.md / memory) | Text three-way merge via go-diff-match-patch. Overlapping edits surface as a file-level conflict. |
 | Opaque / binary                        | Last-write-wins by mtime. No merge attempted.              |
 
 Rule: **never silently lose data**. Anything uncertain goes to the TUI conflict picker, not an automatic resolution.

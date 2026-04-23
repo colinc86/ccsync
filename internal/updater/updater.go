@@ -4,6 +4,7 @@ package updater
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -138,7 +139,14 @@ func authHeader() (string, bool) {
 		}
 	}
 	if _, err := exec.LookPath("gh"); err == nil {
-		out, err := exec.Command("gh", "auth", "token").Output()
+		// Cap `gh auth token` at 5s — a hung gh invocation must not stall
+		// the update check (which is run in the background for the TUI's
+		// "update available" badge) or the install path. 5s is more
+		// than enough for the happy path where gh just returns a
+		// cached token.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
 		if err == nil {
 			t := strings.TrimSpace(string(out))
 			if t != "" {
@@ -292,6 +300,13 @@ func archLabel(arch string) (string, error) {
 	}
 }
 
+// maxBinarySize caps how many bytes extractBinary will copy from the
+// tarball. The real ccsync binary is ~20 MB; 256 MB is comfortable
+// headroom that still stops a malicious or corrupted archive from
+// filling the disk if the self-update path ever gets pointed at a
+// different source (fork with a tampered asset, for instance).
+const maxBinarySize = 256 << 20 // 256 MB
+
 func extractBinary(r io.Reader, out io.Writer) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -314,8 +329,15 @@ func extractBinary(r io.Reader, out io.Writer) error {
 		if filepath.Base(h.Name) != "ccsync" {
 			continue
 		}
-		if _, err := io.Copy(out, tr); err != nil {
+		// Copy at most maxBinarySize + 1 byte — if we read the +1, the
+		// archive exceeds the cap and we bail. io.CopyN returns
+		// io.EOF on a short (normal) read, which we swap for nil.
+		n, err := io.CopyN(out, tr, maxBinarySize+1)
+		if err != nil && err != io.EOF {
 			return fmt.Errorf("extract: %w", err)
+		}
+		if n > maxBinarySize {
+			return fmt.Errorf("release binary is larger than %d MB — refusing to extract (possible tampered archive)", maxBinarySize>>20)
 		}
 		return nil
 	}

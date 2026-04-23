@@ -164,12 +164,15 @@ func RollbackTo(ctx context.Context, in Inputs, targetCommitSHA string) (Result,
 			"next sync will reset and can retry): %w", commitSHA[:7], err)
 	}
 
-	// Update last-synced pointer to the new commit (not the rollback target).
-	if st, err := loadHostState(in.StateDir); err == nil {
-		if newHead, herr := repo.HeadSHA(); herr == nil && newHead != "" {
-			st.LastSyncedSHA[in.Profile] = newHead
-			_ = saveHostState(in.StateDir, st)
-		}
+	// Advance LastSyncedSHA to the NEW forward commit (not the rollback
+	// target). Same non-fatal-but-surfaced contract as resolve: push
+	// succeeded, state may have failed to persist, next sync self-heals.
+	if err := advanceStateToHead(in, repo, commitSHA, "rollback"); err != nil {
+		return Result{
+			CommitSHA:      commitSHA,
+			SnapshotID:     meta.ID,
+			MissingSecrets: missing,
+		}, err
 	}
 
 	return Result{

@@ -14,6 +14,7 @@ import (
 
 	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/gitx"
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
@@ -36,24 +37,24 @@ type settingsModel struct {
 type settingKind int
 
 const (
-	kindDisplay  settingKind = iota // read-only
-	kindText                        // free-form string via modal
-	kindInt                         // integer via modal
-	kindRadio                       // cycle through fixed options on enter
-	kindBool                        // toggle on enter
-	kindAction                      // enter shells out or launches a subflow
-	kindSecret                      // like Text but masked input
+	kindDisplay settingKind = iota // read-only
+	kindText                       // free-form string via modal
+	kindInt                        // integer via modal
+	kindRadio                      // cycle through fixed options on enter
+	kindBool                       // toggle on enter
+	kindAction                     // enter shells out or launches a subflow
+	kindSecret                     // like Text but masked input
 )
 
 type settingRow struct {
 	label   string
 	kind    settingKind
-	value   func() string // current rendered value
-	apply   func(s string) error // commit a text/int edit; ignored for other kinds
-	cycle   func() error         // cycle kind=radio
-	toggle  func() error         // flip kind=bool
+	value   func() string                  // current rendered value
+	apply   func(s string) error           // commit a text/int edit; ignored for other kinds
+	cycle   func() error                   // cycle kind=radio
+	toggle  func() error                   // flip kind=bool
 	run     func(m *settingsModel) tea.Cmd // kind=action
-	options []string             // radio options (for hint text only)
+	options []string                       // radio options (for hint text only)
 }
 
 func newSettings(ctx *AppContext) *settingsModel {
@@ -340,9 +341,10 @@ func (m *settingsModel) buildRows() {
 
 		// --- paths (display only) ---
 		heading("paths"),
-		display("~/.claude", ctx.ClaudeDir),
-		display("~/.claude.json", ctx.ClaudeJSON),
-		display("state dir", ctx.StateDir),
+		display("claude dir", humanize.UserTildePath(ctx.ClaudeDir)),
+		display("claude.json", humanize.UserTildePath(ctx.ClaudeJSON)),
+		display("state dir", humanize.UserTildePath(ctx.StateDir)),
+		display("repo clone", humanize.UserTildePath(ctx.RepoPath)),
 
 		// --- profiles (display; use Profiles screen to switch) ---
 		heading("profiles"),
@@ -639,14 +641,21 @@ func (m *settingsModel) moveCursor(delta int) {
 func (m *settingsModel) View() string {
 	var sb strings.Builder
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	} else if m.message != "" {
-		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
+		sb.WriteString(theme.Good.Render("✓ "+m.message) + "\n\n")
 	}
 
 	for i, r := range m.rows {
 		if isHeading(r) {
-			sb.WriteString("\n" + theme.Heading.Render(strings.TrimPrefix(r.label, "§ ")) + "\n")
+			// Section heading + thin rule. Gives the eye clear
+			// section breaks in a screen that can run to ~40
+			// rows depending on state. Secondary bold + a short
+			// rule underneath reads as "new section" without
+			// the loud underline of the old theme.Heading.
+			label := strings.TrimPrefix(r.label, "§ ")
+			sb.WriteString("\n" + theme.Secondary.Bold(true).Render(label) + "\n")
+			sb.WriteString(theme.Rule.Render(strings.Repeat("─", 30)) + "\n")
 			continue
 		}
 		cursor := "  "
@@ -663,10 +672,17 @@ func (m *settingsModel) View() string {
 
 	if m.editing {
 		cur := m.rows[m.cursor]
-		sb.WriteString("\n" + theme.Primary.Render(cur.label+": ") + m.input.View())
-		sb.WriteString("\n" + theme.Hint.Render("enter save • esc cancel"))
+		sb.WriteString("\n" + theme.Primary.Render(cur.label+": ") + m.input.View() + "\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "enter", label: "save", primary: true},
+			{cap: "esc", label: "cancel"},
+		}))
 	} else {
-		sb.WriteString("\n" + theme.Hint.Render("↑↓ move • enter edit/toggle • esc back"))
+		sb.WriteString("\n" + renderFooterBar([]footerKey{
+			{cap: "enter", label: "edit/toggle", primary: true},
+			{cap: "↑↓", label: "move"},
+			{cap: "esc", label: "back"},
+		}))
 	}
 	return sb.String()
 }

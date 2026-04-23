@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/colinc86/ccsync/internal/bootstrap"
+	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -177,7 +178,11 @@ func (m *bootstrapWizardModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 			runBootstrap(m.ctx, m.sourceKind, m.urlInput.Value(), "default"),
 			m.spin.Tick,
 		)
-	case "b":
+	case "b", "esc":
+		// esc mirrors the documented "b to go back" so users don't
+		// need to learn a screen-specific key to back out. Pre-fix
+		// only "b" worked; esc silently no-op'd even though
+		// every other TUI screen treats esc as back.
 		m.step = stepURL
 		m.urlInput.Focus()
 		return m, textinput.Blink
@@ -206,13 +211,15 @@ func runBootstrap(ctx *AppContext, source bootstrap.Source, urlOrName, profile s
 
 func (m *bootstrapWizardModel) View() string {
 	if m.running {
-		return m.spin.View() + " " + theme.Hint.Render("bootstrapping — cloning and seeding repo…")
+		body := theme.Warn.Bold(true).Render("◌ BOOTSTRAPPING") + "\n" +
+			theme.Hint.Render("cloning the repo and seeding defaults — one moment…")
+		return theme.CardPending.Width(56).Render(body)
 	}
 
 	var sb strings.Builder
 	switch m.step {
 	case stepSource:
-		sb.WriteString(theme.Hint.Render("where should your sync repo live?") + "\n\n")
+		sb.WriteString(theme.Heading.Render("where should your sync repo live?") + "\n\n")
 		for i, c := range m.sourceChoices() {
 			cursor := "  "
 			if m.sourceCursor == i {
@@ -220,7 +227,10 @@ func (m *bootstrapWizardModel) View() string {
 			}
 			sb.WriteString(cursor + c + "\n")
 		}
-		sb.WriteString("\n" + theme.Hint.Render("↑↓ move • enter select"))
+		sb.WriteString("\n" + renderFooterBar([]footerKey{
+			{cap: "enter", label: "select", primary: true},
+			{cap: "↑↓", label: "move"},
+		}))
 
 	case stepURL:
 		label := "repo URL"
@@ -230,29 +240,53 @@ func (m *bootstrapWizardModel) View() string {
 		case bootstrap.SourceLocalBare:
 			label = "local bare repo path"
 		}
-		sb.WriteString(theme.Secondary.Render(label+":") + " " + m.urlInput.View())
-		sb.WriteString("\n\n" + theme.Hint.Render("enter next • esc back"))
+		sb.WriteString(theme.Heading.Render(label) + "\n\n")
+		sb.WriteString("  " + m.urlInput.View() + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "enter", label: "next", primary: true},
+			{cap: "esc", label: "back"},
+		}))
 
 	case stepConfirm:
-		sb.WriteString(theme.Heading.Render("confirm") + "\n\n")
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("source:"), m.sourceSummary())
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("target:"), m.urlInput.Value())
-		fmt.Fprintf(&sb, "  %s  ssh (auto-detect ~/.ssh/id_*)\n", theme.Secondary.Render("auth:"))
-		sb.WriteString("\n" + theme.Primary.Render("enter ") + "apply • " +
-			theme.Hint.Render("b edit URL • esc cancel"))
+		// Confirmation card — neutral-bordered so it reads as "about
+		// to commit" without the pending/warm weight (nothing's gone
+		// wrong, user just needs to approve).
+		var body strings.Builder
+		body.WriteString(theme.Primary.Render("ready to bootstrap") + "\n\n")
+		fmt.Fprintf(&body, " %s %-8s %s\n",
+			theme.Rule.Render("·"), theme.Hint.Render("source"), theme.Secondary.Render(m.sourceSummary()))
+		fmt.Fprintf(&body, " %s %-8s %s\n",
+			theme.Rule.Render("·"), theme.Hint.Render("target"), theme.Secondary.Render(m.urlInput.Value()))
+		fmt.Fprintf(&body, " %s %-8s %s\n",
+			theme.Rule.Render("·"), theme.Hint.Render("auth"), theme.Secondary.Render("ssh (auto-detect ~/.ssh/id_*)"))
+		sb.WriteString(theme.CardNeutral.Width(60).Render(body.String()) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "enter", label: "apply", primary: true},
+			{cap: "b", label: "edit URL"},
+			{cap: "esc", label: "cancel"},
+		}))
 
 	case stepDone:
 		if m.err != nil {
-			sb.WriteString(theme.Bad.Render("bootstrap failed") + "\n\n")
-			sb.WriteString(m.err.Error() + "\n")
-			sb.WriteString("\n" + theme.Hint.Render("press any key to return"))
+			body := theme.Bad.Render("! BOOTSTRAP FAILED") + "\n" +
+				theme.Subtle.Render(gitx.Friendly(m.err))
+			sb.WriteString(theme.CardConflict.Width(60).Render(body) + "\n\n")
+			sb.WriteString(renderFooterBar([]footerKey{
+				{cap: "any key", label: "return", primary: true},
+			}))
 			return sb.String()
 		}
-		sb.WriteString(theme.Good.Render("bootstrapped ✓") + "\n\n")
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("repo:"), m.done.SyncRepoURL)
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("profile:"), m.done.ActiveProfile)
-		sb.WriteString("\n" +
-			theme.Hint.Render("nothing has synced yet — press any key to preview what would change"))
+		var body strings.Builder
+		body.WriteString(theme.Good.Bold(true).Render("✓ BOOTSTRAPPED") + "\n\n")
+		fmt.Fprintf(&body, " %s %-8s %s\n",
+			theme.Rule.Render("·"), theme.Hint.Render("repo"), theme.Secondary.Render(m.done.SyncRepoURL))
+		fmt.Fprintf(&body, " %s %-8s %s\n",
+			theme.Rule.Render("·"), theme.Hint.Render("profile"), theme.Secondary.Render(m.done.ActiveProfile))
+		body.WriteString("\n" + theme.Hint.Render("nothing has synced yet — next step previews what would change"))
+		sb.WriteString(theme.CardClean.Width(60).Render(body.String()) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "any key", label: "continue", primary: true},
+		}))
 	}
 	return sb.String()
 }

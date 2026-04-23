@@ -108,3 +108,35 @@ func TestTextSegmentsPureAdd(t *testing.T) {
 		t.Errorf("remote missing added line: %q", hunk.Remote)
 	}
 }
+
+// TestTextEmptyBaseDivergent pins the empty-base divergent-content
+// case: when we have no shared ancestor and both sides have different
+// content, it MUST surface as a conflict. Without this test, a
+// refactor that changed the dmp fuzzy-apply path could silently
+// produce a surprising "merged" result (concat or interleave) that
+// gets written to the user's disk. For an empty base, the right
+// answer is "user decides" — never silent auto-resolution.
+func TestTextEmptyBaseDivergent(t *testing.T) {
+	r := Text("", "local content\n", "remote content\n")
+	if r.Clean() {
+		t.Fatalf("empty base + divergent content must NOT auto-resolve; got merged=%q", r.Merged)
+	}
+	if string(r.Merged) != "local content\n" {
+		t.Errorf("on conflict, Merged defaults to local; got %q", r.Merged)
+	}
+}
+
+// TestTextSameContentBothSidesShortcuts the identical-content
+// shortcut at the top of Text — when local == remote, the patch
+// dance is skipped entirely and we return local as-is. Keeps the
+// common "both sides landed at the same point" case fast and
+// regression-proof.
+func TestTextSameContentBothSidesShortcuts(t *testing.T) {
+	r := Text("old\n", "new\n", "new\n")
+	if !r.Clean() {
+		t.Fatalf("local==remote must be clean, got %+v", r.Conflicts)
+	}
+	if string(r.Merged) != "new\n" {
+		t.Errorf("Merged = %q, want 'new\\n'", r.Merged)
+	}
+}

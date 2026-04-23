@@ -10,10 +10,10 @@ import (
 // additive (more-specific profiles cannot re-include something a parent
 // excluded — use a separate profile if you need that).
 type ResolvedProfile struct {
-	Name        string
-	Description string
-	HostClasses []string
-	Chain       []string // extends chain, closest-to-leaf first: ["work", "default"]
+	Name         string
+	Description  string
+	HostClasses  []string
+	Chain        []string // extends chain, closest-to-leaf first: ["work", "default"]
 	PathExcludes []string
 }
 

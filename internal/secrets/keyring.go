@@ -126,9 +126,23 @@ func fileBackendPath(key string) (string, error) {
 	return filepath.Join(dir, sanitizeKey(key)), nil
 }
 
-// sanitizeKey maps "/" and ":" into safe chars so keys become flat filenames.
+// sanitizeKey maps a logical key to a safe flat filename. Pre-v0.6.10
+// this collapsed "/", ":", "\" all to "_", which silently collided for
+// any key that already contained "_" (e.g. profile "a_b" + path "x"
+// and profile "a" + path "b_x" both became "a_b_x" — second Store
+// overwrote the first's OAuth token). The collision was a real
+// security-adjacent bug because it mixed secrets across profiles.
+//
+// The replacement uses percent-escape only for the separators we need
+// to neutralize. Reversible, deterministic, and "_" in user input
+// stays as "_" — so distinct inputs always produce distinct filenames.
 func sanitizeKey(key string) string {
-	return strings.NewReplacer("/", "_", ":", "_", "\\", "_").Replace(key)
+	return strings.NewReplacer(
+		"%", "%25",
+		"/", "%2F",
+		":", "%3A",
+		"\\", "%5C",
+	).Replace(key)
 }
 
 func fileStore(key, value string) error {

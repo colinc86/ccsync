@@ -89,6 +89,13 @@ func (m *conflictKeyResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				func() tea.Msg { return perKeyResolvedMsg{fileIdx: idx, bytes: bytes} },
 				popScreen(),
 			)
+		case "esc":
+			// Bail without applying — user is backing out of the
+			// per-key resolver (to the file-level resolver or parent
+			// screen). Pre-fix no esc case meant the screen was a
+			// one-way trapdoor; user had to make a choice for every
+			// key just to leave.
+			return m, popScreen()
 		}
 	}
 	return m, nil
@@ -96,7 +103,22 @@ func (m *conflictKeyResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *conflictKeyResolverModel) View() string {
 	var sb strings.Builder
-	sb.WriteString(theme.Hint.Render(fmt.Sprintf("%d key(s) in this file — default is LOCAL for each", len(m.conflict))) + "\n\n")
+
+	// Progress chip — "3/7 chosen" tracks the user through the list
+	// the same way the parent conflict resolver does for files.
+	chosen := 0
+	for _, c := range m.choices {
+		if c != sync.KeyPending {
+			chosen++
+		}
+	}
+	chipStyle := theme.ChipNeutral
+	if chosen == len(m.conflict) {
+		chipStyle = theme.ChipGood
+	}
+	sb.WriteString(chipStyle.Render(
+		fmt.Sprintf("● %d / %d chosen", chosen, len(m.conflict))) + "  " +
+		theme.Hint.Render("(default is LOCAL)") + "\n\n")
 
 	start, end := windowAround(m.cursor, len(m.conflict), 16)
 	for i := start; i < end; i++ {
@@ -127,12 +149,22 @@ func (m *conflictKeyResolverModel) View() string {
 			if !c.RemotePresent {
 				remoteDisp = theme.Hint.Render("(absent — remote deleted)")
 			}
-			sb.WriteString("     " + theme.Good.Render("local:  ") + localDisp + "\n")
-			sb.WriteString("     " + theme.Secondary.Render("remote: ") + remoteDisp + "\n")
+			// Side-by-side-ish diff — tag each side with a chip so
+			// the user can distinguish at a glance which they're
+			// reading, and the indentation keeps them clearly
+			// subordinate to the key path above.
+			sb.WriteString("     " + theme.ChipGood.Render(" L ") + "  " + localDisp + "\n")
+			sb.WriteString("     " + theme.ChipNeutral.Render(" R ") + "  " + remoteDisp + "\n")
 		}
 	}
-	sb.WriteString("\n" + theme.Primary.Render("a ") + "accept • " +
-		theme.Hint.Render("l local • r remote • ↑↓ move • esc cancel"))
+
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "a", label: "accept", primary: true},
+		{cap: "l", label: "local"},
+		{cap: "r", label: "remote"},
+		{cap: "↑↓", label: "move"},
+		{cap: "esc", label: "cancel"},
+	}))
 	return sb.String()
 }
 

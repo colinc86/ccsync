@@ -13,6 +13,7 @@ import (
 
 	cryptopkg "github.com/colinc86/ccsync/internal/crypto"
 	"github.com/colinc86/ccsync/internal/gitx"
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/snapshot"
 )
@@ -110,21 +111,21 @@ func checkDanglingPlaceholders(path, display string) Finding {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Finding{Check: "placeholders:" + display, Severity: SeverityOK,
+			return Finding{Check: "placeholders " + display, Severity: SeverityOK,
 				Message: "file not present (that's OK; it may not exist on this machine)"}
 		}
-		return Finding{Check: "placeholders:" + display, Severity: SeverityWarn,
+		return Finding{Check: "placeholders " + display, Severity: SeverityWarn,
 			Message: fmt.Sprintf("couldn't read: %v", err)}
 	}
 	if strings.Contains(string(data), "<<REDACTED:ccsync:") {
 		return Finding{
-			Check:    "placeholders:" + display,
+			Check:    "placeholders " + display,
 			Severity: SeverityFail,
 			Message:  display + " contains unresolved redaction placeholders",
 			Suggest:  "open ccsync → RedactionReview to paste missing secrets",
 		}
 	}
-	return Finding{Check: "placeholders:" + display, Severity: SeverityOK,
+	return Finding{Check: "placeholders " + display, Severity: SeverityOK,
 		Message: "no dangling placeholders"}
 }
 
@@ -135,8 +136,8 @@ func checkRepo(path string) Finding {
 	}
 	if _, err := gitx.Open(path); err != nil {
 		return Finding{Check: "repo", Severity: SeverityFail,
-			Message:  fmt.Sprintf("can't open sync repo at %s: %v", path, err),
-			Suggest:  "re-clone from the remote URL, or run Bootstrap",
+			Message: fmt.Sprintf("can't open sync repo at %s: %v", path, err),
+			Suggest: "re-clone from the remote URL, or run Bootstrap",
 		}
 	}
 	return Finding{Check: "repo", Severity: SeverityOK,
@@ -256,20 +257,31 @@ func checkSnapshots(root string) Finding {
 		return Finding{
 			Check:    "snapshots",
 			Severity: SeverityWarn,
-			Message:  fmt.Sprintf("%d snapshot(s) retained, %d orphan dir(s) (missing meta.json)", len(snaps), len(orphans)),
+			Message:  fmt.Sprintf("%s retained, %s (missing meta.json)", humanize.Count(len(snaps), "snapshot"), humanize.Count(len(orphans), "orphan dir")),
 			Suggest:  "ccsync doctor --fix will remove the orphan dirs",
 			Fix: func() error {
+				// Attempt every orphan even when one fails — one
+				// stuck dir (permission denied, filesystem lock)
+				// shouldn't leave the others untouched. Collect
+				// failures and report them all so the user knows
+				// exactly what to clean up by hand.
+				var failed []string
 				for _, dir := range orphans {
 					if err := os.RemoveAll(dir); err != nil {
-						return err
+						failed = append(failed, fmt.Sprintf("%s: %v", dir, err))
 					}
+				}
+				if len(failed) > 0 {
+					return fmt.Errorf("%s: %s",
+						humanize.Count(len(failed), "orphan dir")+" failed to remove",
+						strings.Join(failed, "; "))
 				}
 				return nil
 			},
 		}
 	}
 	return Finding{Check: "snapshots", Severity: SeverityOK,
-		Message: fmt.Sprintf("%d snapshot(s) retained", len(snaps))}
+		Message: humanize.Count(len(snaps), "snapshot") + " retained"}
 }
 
 // orphanSnapshotDirs returns absolute paths of subdirs of root that lack

@@ -59,6 +59,36 @@ func TestRejectUnencryptedOnDecrypt(t *testing.T) {
 	}
 }
 
+// TestEmptyPlaintextRoundTrips pins the "empty in, empty out" behavior.
+// Pre-v0.6.x the doc comment claimed empty inputs passed through
+// unchanged — not true; they encrypt to a 36-byte envelope (magic +
+// nonce + Poly1305 tag). The envelope decrypts back to empty, which
+// is the contract that actually matters. Keep this test to catch any
+// future attempt to "optimize" empty plaintexts out; the magic header
+// must be present on every ciphertext or HasMagic breaks during
+// encrypt/decrypt migrations.
+func TestEmptyPlaintextRoundTrips(t *testing.T) {
+	m, _ := NewMarker()
+	key := mustKey(t, m, "pp")
+	ct, err := Encrypt(key, []byte{})
+	if err != nil {
+		t.Fatalf("encrypt empty: %v", err)
+	}
+	if !HasMagic(ct) {
+		t.Fatal("encrypted empty blob must still carry magic header")
+	}
+	if len(ct) == 0 {
+		t.Fatal("encrypted empty must NOT be zero-length — HasMagic would then fail to distinguish it from stray plaintext")
+	}
+	back, err := Decrypt(key, ct)
+	if err != nil {
+		t.Fatalf("decrypt empty ct: %v", err)
+	}
+	if len(back) != 0 {
+		t.Errorf("empty round-trip produced %d bytes, want 0", len(back))
+	}
+}
+
 func mustKey(t *testing.T, m *Marker, passphrase string) []byte {
 	t.Helper()
 	k, err := m.DeriveKey(passphrase)

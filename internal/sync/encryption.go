@@ -30,7 +30,7 @@ func loadRepoEncryptionKey(repoPath string) ([]byte, error) {
 		if errors.Is(err, secrets.ErrNotFound) {
 			return nil, fmt.Errorf(
 				"repo is encrypted but no passphrase is stored on this machine " +
-					"(run `ccsync encrypt login` or enter it via the TUI)")
+					"(run `ccsync unlock` or enter it via the TUI)")
 		}
 		return nil, err
 	}

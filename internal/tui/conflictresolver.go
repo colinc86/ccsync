@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -65,7 +66,9 @@ func newConflictResolver(ctx *AppContext, conflicts []sync.FileConflict) *confli
 	}
 }
 
-func (m *conflictResolverModel) Title() string { return fmt.Sprintf("Conflicts (%d)", len(m.conflicts)) }
+func (m *conflictResolverModel) Title() string {
+	return fmt.Sprintf("Conflicts (%d)", len(m.conflicts))
+}
 func (m *conflictResolverModel) Init() tea.Cmd { return nil }
 
 type applyResolutionsDoneMsg struct {
@@ -86,7 +89,18 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// pull the change into the TUI's state so the status bar refreshes,
 		// and recompute the plan so the next frame reflects the new counts.
 		m.ctx.RefreshState()
-		return m, refreshPlanCmd(m.ctx)
+		var toast tea.Cmd
+		if msg.err != nil {
+			toast = showToast("resolve failed: "+msg.err.Error(), toastError)
+		} else {
+			n := len(m.conflicts)
+			unit := "conflict"
+			if n != 1 {
+				unit += "s"
+			}
+			toast = showToast(fmt.Sprintf("✓ %d %s resolved and pushed", n, unit), toastSuccess)
+		}
+		return m, tea.Batch(refreshPlanCmd(m.ctx), toast)
 	case perKeyResolvedMsg:
 		m.override[msg.fileIdx] = msg.bytes
 		m.choices[msg.fileIdx] = choicePerKey
@@ -126,12 +140,23 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.advance()
 			}
 		case "enter":
-			if len(m.conflicts) > 0 && m.conflicts[m.cursor].IsJSON {
-				return m, switchTo(newConflictKeyResolver(m.ctx, m.cursor, m.conflicts[m.cursor]))
+			// Enter drills into the appropriate per-item picker — JSON
+			// goes to per-key, text goes to per-hunk. Pre-fix, enter
+			// on a text conflict silently did nothing because the key
+			// picker is JSON-only; users then had to hunt for the
+			// `h` shortcut. `h` still works, but `enter` is the
+			// universal "go deeper" key and should follow that
+			// convention.
+			if len(m.conflicts) > 0 {
+				fc := m.conflicts[m.cursor]
+				if fc.IsJSON {
+					return m, switchTo(newConflictKeyResolver(m.ctx, m.cursor, fc))
+				}
+				return m, switchTo(newConflictHunkResolver(m.ctx, m.cursor, fc))
 			}
 		case "h":
-			// Per-hunk text resolution. JSON conflicts already have per-
-			// key drill-down via enter; hunk resolver is for text files.
+			// Retained as the explicit per-hunk shortcut for users
+			// who learned it from earlier versions or the help overlay.
 			if len(m.conflicts) > 0 && !m.conflicts[m.cursor].IsJSON {
 				return m, switchTo(newConflictHunkResolver(m.ctx, m.cursor, m.conflicts[m.cursor]))
 			}
@@ -157,31 +182,51 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // cases that need per-file control.
 func (m *conflictResolverModel) renderStrategy() string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s %d file(s) diverged between local and the repo.\n\n",
-		theme.Bad.Render("!"), len(m.conflicts))
 
-	// Preview a few of them so the user knows what they're deciding on.
+	// Hero conflict card — red-bordered so the user immediately
+	// understands the stakes. The previous "! N file diverged"
+	// prose was correct but easy to miss; a bordered card with a
+	// big glyph and caps title stops the eye.
+	var card strings.Builder
+	card.WriteString(theme.Bad.Render("!  ") +
+		theme.Bad.Render(fmt.Sprintf("%d CONFLICT",
+			len(m.conflicts))))
+	if len(m.conflicts) != 1 {
+		card.WriteString(theme.Bad.Render("S"))
+	}
+	card.WriteString("\n" + theme.Subtle.Render(
+		"this machine and the sync repo have diverging versions of these files"))
+	// Preview a few.
+	card.WriteString("\n")
 	for i, fc := range m.conflicts {
 		if i >= 5 {
-			fmt.Fprintf(&sb, theme.Hint.Render("  … %d more\n"), len(m.conflicts)-5)
+			fmt.Fprintf(&card, "\n"+theme.Hint.Render("  … %d more"), len(m.conflicts)-5)
 			break
 		}
-		fmt.Fprintf(&sb, "  · %s\n", fc.Path)
+		fmt.Fprintf(&card, "\n  %s %s", theme.Bad.Render("·"), fc.Path)
 	}
-	sb.WriteString("\n" + theme.Heading.Render("how should we resolve?") + "\n\n")
-	fmt.Fprintf(&sb, "  %s  %s %s\n",
-		theme.Primary.Render("1"),
-		"replace local with cloud",
-		theme.Hint.Render("— take the repo's version for every file"))
-	fmt.Fprintf(&sb, "  %s  %s %s\n",
-		theme.Primary.Render("2"),
-		"replace cloud with local",
-		theme.Hint.Render("— push your ~/.claude version up as the winner"))
-	fmt.Fprintf(&sb, "  %s  %s %s\n",
-		theme.Primary.Render("3"),
-		"manual — pick per file",
-		theme.Hint.Render("— detailed picker with per-key JSON / per-hunk text"))
-	sb.WriteString("\n" + theme.Hint.Render("1-3 choose • esc cancel"))
+	sb.WriteString(theme.CardConflict.Width(56).Render(card.String()) + "\n\n")
+
+	// Resolution choices — numbered, with muted descriptions. Keeps
+	// the hierarchy of "big decision up top, details on hover."
+	sb.WriteString(theme.Heading.Render("how should we resolve?") + "\n\n")
+	writeChoice := func(key, verb, hint string) {
+		fmt.Fprintf(&sb, "  %s  %s\n      %s\n\n",
+			theme.Keycap.Render(key),
+			theme.Primary.Render(verb),
+			theme.Hint.Render(hint))
+	}
+	writeChoice("1", "replace local with cloud",
+		"take the repo's version for every file — safest when you trust the fleet")
+	writeChoice("2", "replace cloud with local",
+		"push your ~/.claude version up as the winner")
+	writeChoice("3", "pick per file",
+		"detailed picker: per-key JSON conflicts, per-hunk text merges")
+
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "1-3", label: "choose", primary: true},
+		{cap: "esc", label: "cancel"},
+	}))
 	return sb.String()
 }
 
@@ -262,24 +307,38 @@ func (m *conflictResolverModel) View() string {
 		return theme.Good.Render("no conflicts")
 	}
 	var sb strings.Builder
+	sb.WriteString(theme.Wordmark("resolve conflicts") + "\n\n")
 
 	if m.applying {
-		return theme.Hint.Render("writing resolutions and pushing…")
+		card := theme.CardPending.Width(56).Render(
+			theme.Warn.Bold(true).Render("◌ APPLYING") + "\n" +
+				theme.Hint.Render("writing resolutions and pushing to the remote…"))
+		sb.WriteString(card)
+		return sb.String()
 	}
 	if m.result != nil {
-		sb.WriteString(theme.Good.Render("resolved ✓") + "\n")
+		short := ""
 		if m.result.CommitSHA != "" {
-			short := m.result.CommitSHA
+			short = m.result.CommitSHA
 			if len(short) > 7 {
 				short = short[:7]
 			}
-			sb.WriteString("committed " + short + "\n")
 		}
-		sb.WriteString("\n" + theme.Hint.Render("press any key to return"))
+		var body strings.Builder
+		body.WriteString(theme.Good.Bold(true).Render("✓ RESOLVED"))
+		if short != "" {
+			body.WriteString("  " + theme.Hint.Render(short))
+		}
+		body.WriteString("\n" + theme.Subtle.Render(fmt.Sprintf(
+			"%s reconciled and pushed to the remote", humanize.Count(len(m.conflicts), "conflict"))))
+		sb.WriteString(theme.CardClean.Width(56).Render(body.String()) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "any key", label: "return to home", primary: true},
+		}))
 		return sb.String()
 	}
 	if m.strategyPending {
-		return m.renderStrategy()
+		return sb.String() + m.renderStrategy()
 	}
 
 	resolved := 0
@@ -288,7 +347,16 @@ func (m *conflictResolverModel) View() string {
 			resolved++
 		}
 	}
-	sb.WriteString(fmt.Sprintf("%d of %d resolved\n\n", resolved, len(m.conflicts)))
+
+	// Progress chip — "3/5 resolved" as a neutral-toned pill so the
+	// user can track their progress through the list without
+	// counting rows. Changes to Good once all are resolved.
+	chipStyle := theme.ChipNeutral
+	if m.allResolved() {
+		chipStyle = theme.ChipGood
+	}
+	sb.WriteString(chipStyle.Render(
+		fmt.Sprintf("● %d / %d resolved", resolved, len(m.conflicts))) + "\n\n")
 
 	for i, fc := range m.conflicts {
 		cursor := "  "
@@ -298,17 +366,29 @@ func (m *conflictResolverModel) View() string {
 		mark := m.choices[i].symbol()
 		sb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, mark, fc.Path))
 		if m.cursor == i {
+			unit := "hunk"
+			if fc.IsJSON {
+				unit = "key-level conflict"
+			}
 			sb.WriteString(theme.Hint.Render(fmt.Sprintf(
-				"     local: %d bytes • remote: %d bytes • %d key-level conflict(s)\n",
-				len(fc.LocalData), len(fc.RemoteData), len(fc.Conflicts),
+				"     local: %d bytes • remote: %d bytes • %s\n",
+				len(fc.LocalData), len(fc.RemoteData), humanize.Count(len(fc.Conflicts), unit),
 			)))
 		}
 	}
 
 	sb.WriteString("\n")
+	keys := []footerKey{}
 	if m.allResolved() {
-		sb.WriteString(theme.Primary.Render("a ") + "apply all • ")
+		keys = append(keys, footerKey{cap: "a", label: "apply all", primary: true})
 	}
-	sb.WriteString(theme.Hint.Render("l local • r remote • enter per-key (JSON) • h per-hunk (text) • d diff • ↑↓ move"))
+	keys = append(keys,
+		footerKey{cap: "l", label: "local", primary: !m.allResolved()},
+		footerKey{cap: "r", label: "remote"},
+		footerKey{cap: "enter", label: "drill in"},
+		footerKey{cap: "d", label: "diff"},
+		footerKey{cap: "esc", label: "cancel"},
+	)
+	sb.WriteString(renderFooterBar(keys))
 	return sb.String()
 }

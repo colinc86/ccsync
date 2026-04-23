@@ -29,7 +29,7 @@ func commitMessage(profile, host string, plan Plan, pre, post map[string][]byte)
 	paths := make([]string, 0, len(plan.Actions))
 	byPath := map[string]FileAction{}
 	for _, a := range plan.Actions {
-		if a.ExcludedByProfile {
+		if a.ExcludedByProfile || a.ExcludedByDeny {
 			continue
 		}
 		if a.Action == manifest.ActionNoOp {
@@ -79,11 +79,12 @@ func commitMessage(profile, host string, plan Plan, pre, post map[string][]byte)
 // back to the bare path when it doesn't match a recognized shape.
 //
 // Examples:
-//   profiles/default/claude/agents/git-helpers.md → "agent: git-helpers"
-//   profiles/default/claude/skills/research/SKILL.md → "skill: research"
-//   profiles/default/claude/commands/status.md → "command: status"
-//   profiles/default/CLAUDE.md → "CLAUDE.md"
-//   profiles/default/claude.json → "claude.json: mcpServers.gemini, theme"
+//
+//	profiles/default/claude/agents/git-helpers.md → "agent: git-helpers"
+//	profiles/default/claude/skills/research/SKILL.md → "skill: research"
+//	profiles/default/claude/commands/status.md → "command: status"
+//	profiles/default/CLAUDE.md → "CLAUDE.md"
+//	profiles/default/claude.json → "claude.json: mcpServers.gemini, theme"
 func SemanticLabel(repoPath string, pre, post []byte) string {
 	rel := stripProfilePrefix(repoPath)
 	switch {
@@ -144,10 +145,9 @@ func changedTopLevelKeys(pre, post []byte) []string {
 			keys[k] = true
 		}
 	}
-	for k, v := range pm {
+	for k := range pm {
 		if _, ok := om[k]; !ok {
 			keys[k] = true
-			_ = v
 		}
 	}
 	out := make([]string, 0, len(keys))

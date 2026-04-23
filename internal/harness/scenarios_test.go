@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/colinc86/ccsync/internal/category"
 	"github.com/colinc86/ccsync/internal/config"
@@ -701,6 +702,99 @@ func TestScenarios(t *testing.T) {
 		after := len(s.BareCommits())
 		if before != after {
 			t.Errorf("no-op sync produced a commit: %d → %d", before, after)
+		}
+	})
+
+	// --- mcpServers-only claude.json changes classify as MCPServers ---
+	//
+	// Pre-v0.6.14 the classifier hardcoded claude.json to
+	// GeneralSettings. The MCPServers review policy the user could
+	// set in the Policies screen silently had no effect — adding a
+	// new MCP server auto-applied even with MCPServers.push=review.
+	// This scenario pins the wiring end-to-end: seed a claude.json
+	// whose only delta vs the remote is under $.mcpServers, ask the
+	// sync engine to classify the action, and assert Category ==
+	// "mcp_servers". A refactor that drops the MCPOnlyDiff wire
+	// breaks this test loudly.
+	t.Run("mcp_only_claude_json_change_classifies_as_mcp_servers", func(t *testing.T) {
+		s := harness.NewScenario(t)
+		// Machine A: seed a claude.json with an initial mcpServers
+		// entry and sync to establish the baseline.
+		a := s.NewMachine("a").WriteClaudeJSON(`{"theme":"dark","mcpServers":{"x":{"command":"v1"}}}`)
+		a.Sync()
+
+		// Now mutate only the mcpServers subtree and dry-run — the
+		// classifier should recognize the delta as mcp-only.
+		a.WriteClaudeJSON(`{"theme":"dark","mcpServers":{"x":{"command":"v2"}}}`)
+		plan := a.DryRun()
+
+		var foundMCP, foundClaudeJSON bool
+		for _, act := range plan.Actions {
+			if !strings.HasSuffix(act.Path, "/claude.json") {
+				continue
+			}
+			foundClaudeJSON = true
+			if act.Category == category.MCPServers {
+				foundMCP = true
+			} else {
+				t.Errorf("claude.json action with mcp-only delta classified as %q, want %q — the MCPServers review policy won't fire",
+					act.Category, category.MCPServers)
+			}
+		}
+		if !foundClaudeJSON {
+			t.Fatal("no claude.json action in plan — seed didn't produce a diff")
+		}
+		if !foundMCP {
+			t.Fatal("classification fix didn't take effect")
+		}
+	})
+
+	// --- LastSyncedAt is populated on push-only syncs ---
+	//
+	// Pre-v0.6.5 the home dashboard derived "last synced Nh ago" from the
+	// newest snapshot file — but snapshots are only taken pre-local-write,
+	// so push-only syncs (the common case for machine #1 after an edit)
+	// left the dashboard showing the pre-write timestamp forever. The
+	// proper fix: a LastSyncedAt field on state.State, populated in
+	// lockstep with LastSyncedSHA on every advance. This scenario pins
+	// that field and would have caught a future refactor that forgot to
+	// update it.
+	t.Run("push_only_sync_advances_last_synced_at", func(t *testing.T) {
+		s := harness.NewScenario(t)
+		a := s.NewMachine("a").WriteClaudeFile("agents/foo.md", "v1")
+		before := time.Now().UTC()
+		a.Sync()
+		after := time.Now().UTC()
+
+		st, err := state.Load(a.StateDir)
+		if err != nil {
+			t.Fatalf("load state: %v", err)
+		}
+		got, ok := st.LastSyncedAt[a.Profile]
+		if !ok || got.IsZero() {
+			t.Fatalf("LastSyncedAt[%q] absent or zero — dashboard would fall back to stale snapshot time", a.Profile)
+		}
+		// Allow a small slack on both sides; time.Now() before/after
+		// brackets the moment Run saves state.
+		if got.Before(before.Add(-time.Second)) || got.After(after.Add(time.Second)) {
+			t.Errorf("LastSyncedAt %v outside [%v, %v] window — advance is firing at the wrong step",
+				got, before, after)
+		}
+
+		// Second sync (still push-only, different file) must also
+		// advance the timestamp — the first one shouldn't latch.
+		first := got
+		// Give time.Now a detectable tick so we can assert advance.
+		time.Sleep(1100 * time.Millisecond)
+		a.WriteClaudeFile("agents/bar.md", "v1")
+		a.Sync()
+		st2, err := state.Load(a.StateDir)
+		if err != nil {
+			t.Fatalf("reload state: %v", err)
+		}
+		if !st2.LastSyncedAt[a.Profile].After(first) {
+			t.Errorf("second push-only sync didn't advance LastSyncedAt: %v → %v",
+				first, st2.LastSyncedAt[a.Profile])
 		}
 	})
 }

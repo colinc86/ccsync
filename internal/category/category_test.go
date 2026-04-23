@@ -78,3 +78,62 @@ func TestMCPServerDiffHandlesAbsent(t *testing.T) {
 		t.Errorf("expected single add-item for x; got %+v", items)
 	}
 }
+
+// TestMCPOnlyDiff pins the classifier input that decides whether a
+// claude.json change routes through the MCPServers review policy.
+// The cases cover: pure mcp edits, mcp absence-vs-presence, mixed
+// edits (mcp + other key), edits not involving mcp, and
+// malformed/empty input.
+func TestMCPOnlyDiff(t *testing.T) {
+	cases := []struct {
+		name   string
+		local  string
+		remote string
+		want   bool
+	}{
+		{
+			name:   "adds mcp server only",
+			local:  `{"theme":"dark","mcpServers":{"x":{"command":"y"}}}`,
+			remote: `{"theme":"dark"}`,
+			want:   true,
+		},
+		{
+			name:   "modifies mcp server only",
+			local:  `{"theme":"dark","mcpServers":{"x":{"command":"v2"}}}`,
+			remote: `{"theme":"dark","mcpServers":{"x":{"command":"v1"}}}`,
+			want:   true,
+		},
+		{
+			name:   "modifies theme and mcp — NOT mcp-only",
+			local:  `{"theme":"dark","mcpServers":{"x":{"command":"v2"}}}`,
+			remote: `{"theme":"light","mcpServers":{"x":{"command":"v1"}}}`,
+			want:   false,
+		},
+		{
+			name:   "modifies only theme — not mcp-related",
+			local:  `{"theme":"dark"}`,
+			remote: `{"theme":"light"}`,
+			want:   false,
+		},
+		{
+			name:   "empty remote, local adds mcp",
+			local:  `{"mcpServers":{"x":{"command":"y"}}}`,
+			remote: ``,
+			want:   true,
+		},
+		{
+			name:   "empty remote, local adds mcp + theme",
+			local:  `{"theme":"dark","mcpServers":{"x":{"command":"y"}}}`,
+			remote: ``,
+			want:   false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := MCPOnlyDiff([]byte(c.local), []byte(c.remote))
+			if got != c.want {
+				t.Errorf("MCPOnlyDiff = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

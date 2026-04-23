@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/manifest"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
@@ -80,15 +81,29 @@ func startSync(ctx *AppContext, onlyPaths map[string]bool) tea.Cmd {
 		events := make(chan sync.Event, 128)
 		doneCh := make(chan doneMsg, 1)
 		go func() {
+			// Belt-and-braces: if anything inside sync.RunWithRetry
+			// panics (nil map write, slice-out-of-bounds in the merge
+			// engine, etc.), recover it to a done-with-error instead
+			// of letting the goroutine tear down with events still
+			// open and doneCh still empty — awaitNext would then block
+			// forever and the TUI would hang without error feedback.
+			// Also guarantees close(events) fires on every exit path.
+			defer close(events)
+			defer func() {
+				if r := recover(); r != nil {
+					// doneCh is buffered(1) and nothing else writes
+					// to it here (the panic aborted before the happy
+					// send), so this won't block.
+					doneCh <- doneMsg{err: fmt.Errorf("sync panicked: %v", r)}
+				}
+			}()
 			in, err := buildSyncInputs(ctx, false)
 			if err != nil {
 				doneCh <- doneMsg{err: err}
-				close(events)
 				return
 			}
 			in.OnlyPaths = onlyPaths
 			res, err := sync.RunWithRetry(context.Background(), in, events)
-			close(events)
 			doneCh <- doneMsg{res: res, err: err}
 		}()
 		return startedMsg{events: events, done: doneCh}
@@ -160,14 +175,44 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TUI's in-memory copy so Home + status bar reflect the new state,
 		// and recompute the cached plan so push/pull counts are fresh.
 		m.ctx.RefreshState()
+
+		// Toast — success with human-readable change counts; error
+		// with the friendly translation. Change counts beat short
+		// SHAs for user-facing language: "+1 ~2 -0" tells the user
+		// exactly what happened without them cross-referencing a
+		// commit hash they won't remember.
+		var toast tea.Cmd
+		if msg.err != nil {
+			toast = showToast("sync failed: "+msg.err.Error(), toastError)
+		} else if msg.res.CommitSHA != "" {
+			added, modified, deleted := msg.res.Plan.Summary()
+			var changes []string
+			if added > 0 {
+				changes = append(changes, fmt.Sprintf("+%d", added))
+			}
+			if modified > 0 {
+				changes = append(changes, fmt.Sprintf("~%d", modified))
+			}
+			if deleted > 0 {
+				changes = append(changes, fmt.Sprintf("-%d", deleted))
+			}
+			msgText := "sync complete"
+			if len(changes) > 0 {
+				msgText += " · " + strings.Join(changes, " ")
+			}
+			toast = showToast(msgText, toastSuccess)
+		} else {
+			toast = showToast("already in sync", toastInfo)
+		}
+
 		// If the review screen queued any promotes, run them now that
 		// the main sync committed. Only runs once per syncModel via
 		// promoteRan; subsequent plan-refresh cycles don't re-fire.
 		if !m.promoteRan && len(m.pendingPromotes) > 0 && msg.err == nil {
 			m.promoteRan = true
-			return m, tea.Batch(runPromotes(m.ctx, m.pendingPromotes), refreshPlanCmd(m.ctx))
+			return m, tea.Batch(runPromotes(m.ctx, m.pendingPromotes), refreshPlanCmd(m.ctx), toast)
 		}
-		return m, refreshPlanCmd(m.ctx)
+		return m, tea.Batch(refreshPlanCmd(m.ctx), toast)
 	case promotesDoneMsg:
 		m.promoteErr = msg.err
 		// Re-refresh so the dashboard reflects the promote commit.
@@ -196,69 +241,173 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *syncModel) View() string {
 	var sb strings.Builder
-	for _, e := range m.events {
-		stage := theme.Secondary.Render(fmt.Sprintf("%-10s", stageGlyph(e.Stage)+e.Stage))
-		line := stage + " " + e.Message
-		if e.Path != "" {
-			line += " " + theme.Hint.Render(e.Path)
-		}
-		sb.WriteString(line + "\n")
-	}
+	sb.WriteString(theme.Wordmark("syncing") + "\n\n")
+
+	// Step tree: render the canonical stage sequence with a checkmark
+	// for completed stages, a spinner for the active one, and a muted
+	// dot for the still-to-come. Gives sync-in-flight a sense of
+	// forward motion instead of a scrolling log that looks identical
+	// every frame. Stages that a given sync skips (e.g. "redaction"
+	// when nothing with secrets changed) collapse away to keep the
+	// tree tight.
+	sb.WriteString(renderStageTree(m.events, m.spin.View(), m.done) + "\n")
+
 	if !m.done {
-		sb.WriteString("\n" + m.spin.View() + " " + theme.Hint.Render(currentStage(m.events)))
 		return sb.String()
 	}
 	sb.WriteString("\n")
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: ") + m.err.Error() + "\n")
-		sb.WriteString("\n" + theme.Hint.Render("press any key to go back"))
+		sb.WriteString(renderError(m.err) + "\n")
+		sb.WriteString("\n" + renderFooterBar([]footerKey{
+			{cap: "any key", label: "return", primary: true},
+		}))
 		return sb.String()
 	}
 	if m.result != nil {
 		r := m.result
-		if r.CommitSHA != "" {
-			short := r.CommitSHA
-			if len(short) > 7 {
-				short = short[:7]
-			}
-			sb.WriteString(theme.Good.Render("committed ") + short + "\n")
-			// Human recap — "Added 2 agents, changed CLAUDE.md" — so the
-			// user knows at a glance what just happened without reading
-			// git log. Reuses the semantic extractor from commit.go.
-			if recap := renderSyncRecap(r.Plan); recap != "" {
-				sb.WriteString(theme.Hint.Render(recap) + "\n")
-			}
-		} else {
-			sb.WriteString(theme.Good.Render("no changes to push") + "\n")
-		}
-		if r.SnapshotID != "" {
-			sb.WriteString(theme.Hint.Render("pre-sync snapshot: "+r.SnapshotID) + "\n")
-		}
-		if len(r.MissingSecrets) > 0 {
-			sb.WriteString(theme.Warn.Render(fmt.Sprintf("%d file(s) skipped (missing secrets)", len(r.MissingSecrets))) + "\n")
-			for _, p := range r.MissingSecrets {
-				sb.WriteString("  " + p + "\n")
-			}
-		}
+		// Result card — summarises what just happened in a single
+		// green-bordered pane instead of scattered lines. The
+		// follow-up action chips (resolve / fill secrets) live
+		// below the card so the keyboard verb stays discoverable.
+		sb.WriteString(renderSyncResultCard(r) + "\n")
+		var chips []footerKey
 		if len(r.Plan.Conflicts) > 0 {
-			sb.WriteString(theme.Bad.Render(fmt.Sprintf("%d conflict(s)", len(r.Plan.Conflicts))) + "   " + theme.Primary.Render("r ") + "resolve\n")
+			chips = append(chips, footerKey{cap: "r", label: "resolve conflicts", primary: true})
 		}
 		if len(r.MissingSecrets) > 0 {
-			sb.WriteString(theme.Warn.Render(fmt.Sprintf("%d missing secret(s)", len(r.MissingSecrets))) + "   " + theme.Primary.Render("v ") + "fill\n")
+			chips = append(chips, footerKey{cap: "v", label: "fill missing secrets", primary: len(chips) == 0})
 		}
+		chips = append(chips, footerKey{cap: "any key", label: "return"})
+		sb.WriteString("\n" + renderFooterBar(chips))
 	}
-	sb.WriteString("\n" + theme.Hint.Render("any other key returns to home"))
 	return sb.String()
 }
 
-// renderSyncRecap summarizes a completed plan as a one-liner using the
-// same semantic labels the commit body uses. Skips excluded + no-op rows,
-// collapses Added/Changed/Removed into compact phrases. Returns empty
-// string when there's nothing worth saying.
+// stageOrder is the canonical left-to-right sync progression. Stages
+// not in this list (e.g. "align") are appended in event-order below.
+var stageOrder = []struct{ key, label string }{
+	{"fetch", "fetching remote"},
+	{"discover", "walking local files"},
+	{"snapshot", "snapshotting pre-sync state"},
+	{"redaction", "handling secrets"},
+	{"commit", "committing changes"},
+	{"push", "pushing to remote"},
+	{"done", "finalising"},
+}
+
+// renderStageTree turns the streaming Events channel into a static
+// tree with completed ✓, in-flight spinner, and muted-◦ upcoming.
+// `frame` is the current spinner glyph (caller passes spin.View()).
+// After the sync has settled, every stage renders with its final
+// glyph — either ✓ for stages we saw, or dim-◦ for stages that
+// didn't fire (push-only sync skips snapshot, etc.).
+func renderStageTree(events []sync.Event, frame string, done bool) string {
+	seen := map[string]bool{}
+	for _, e := range events {
+		seen[e.Stage] = true
+	}
+	// Index the latest stage we've observed so the "current" one
+	// (most recently seen, not yet followed by a later stage) gets
+	// the spinner.
+	latest := ""
+	if len(events) > 0 {
+		latest = events[len(events)-1].Stage
+	}
+
+	var sb strings.Builder
+	for _, s := range stageOrder {
+		var glyph string
+		var label string
+		switch {
+		case !seen[s.key] && done:
+			// Stage didn't fire this sync; render dim so the user
+			// sees the canonical flow but doesn't wonder what was
+			// skipped.
+			glyph = theme.Hint.Render("◦")
+			label = theme.Hint.Render(s.label + " (skipped)")
+		case !seen[s.key]:
+			glyph = theme.Hint.Render("◦")
+			label = theme.Hint.Render(s.label)
+		case s.key == latest && !done:
+			// The active stage. Animate with the spinner frame and
+			// bold the label so the eye knows what's happening now.
+			glyph = frame
+			label = theme.Primary.Render(s.label)
+		default:
+			glyph = theme.Good.Render("✓")
+			label = theme.Secondary.Render(s.label)
+		}
+		fmt.Fprintf(&sb, "  %s  %s\n", glyph, label)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// renderSyncResultCard is the post-sync summary: what committed,
+// what recap to show, what follow-ups need user attention. Rendered
+// inside a clean-state card (green border) for committed syncs, a
+// pending-state card (warm border) for no-op syncs, and a
+// conflict-state card when there are unresolved conflicts.
+func renderSyncResultCard(r *sync.Result) string {
+	var sb strings.Builder
+	card := theme.CardClean
+
+	if r.CommitSHA != "" {
+		short := r.CommitSHA
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		sb.WriteString(theme.Good.Bold(true).Render("✓ COMMITTED") + "  " +
+			theme.Hint.Render(short) + "\n")
+		if recap := renderSyncRecap(r.Plan); recap != "" {
+			sb.WriteString(theme.Subtle.Render(recap) + "\n")
+		}
+	} else {
+		sb.WriteString(theme.Good.Bold(true).Render("✓ ALREADY IN SYNC") + "\n")
+		sb.WriteString(theme.Subtle.Render("no local changes to push") + "\n")
+	}
+	if r.SnapshotID != "" {
+		sb.WriteString(theme.Hint.Render("snapshot: "+r.SnapshotID) + "\n")
+	}
+	if len(r.MissingSecrets) > 0 {
+		card = theme.CardPending
+		sb.WriteString("\n" + theme.Warn.Render(
+			humanize.Count(len(r.MissingSecrets), "file")+" skipped (missing secrets)") + "\n")
+		max := 5
+		for i, p := range r.MissingSecrets {
+			if i >= max {
+				fmt.Fprintf(&sb, theme.Hint.Render("  … %d more\n"), len(r.MissingSecrets)-max)
+				break
+			}
+			sb.WriteString("  " + theme.Hint.Render(p) + "\n")
+		}
+	}
+	if len(r.Plan.Conflicts) > 0 {
+		card = theme.CardConflict
+		sb.WriteString("\n" + theme.Bad.Render(
+			humanize.Count(len(r.Plan.Conflicts), "conflict unresolved")) + "\n")
+	}
+	return card.Width(56).Render(strings.TrimRight(sb.String(), "\n"))
+}
+
+// renderSyncRecap summarizes a completed plan as a one-liner using
+// past-tense verbs ("Added 2 agents, Changed CLAUDE.md"). Called on
+// the Sync screen after a commit lands.
 func renderSyncRecap(plan sync.Plan) string {
+	return renderRecapVerbs(plan, "Added", "Changed", "Removed")
+}
+
+// renderSyncPreview is the imperative-tense counterpart: "Add 2
+// agents, Change CLAUDE.md". Called on the Home dashboard to give
+// the user a specific-file preview of what the next sync will do —
+// more informative than the status badge's raw counts.
+func renderSyncPreview(plan sync.Plan) string {
+	return renderRecapVerbs(plan, "Add", "Change", "Remove")
+}
+
+func renderRecapVerbs(plan sync.Plan, vAdd, vChange, vRemove string) string {
 	var added, changed, removed []string
 	for _, a := range plan.Actions {
-		if a.ExcludedByProfile {
+		if a.ExcludedByProfile || a.ExcludedByDeny {
 			continue
 		}
 		if a.Action == manifest.ActionNoOp {
@@ -275,13 +424,13 @@ func renderSyncRecap(plan sync.Plan) string {
 		}
 	}
 	var parts []string
-	if s := recapPhrase("Added", added); s != "" {
+	if s := recapPhrase(vAdd, added); s != "" {
 		parts = append(parts, s)
 	}
-	if s := recapPhrase("Changed", changed); s != "" {
+	if s := recapPhrase(vChange, changed); s != "" {
 		parts = append(parts, s)
 	}
-	if s := recapPhrase("Removed", removed); s != "" {
+	if s := recapPhrase(vRemove, removed); s != "" {
 		parts = append(parts, s)
 	}
 	return strings.Join(parts, " · ")
@@ -308,37 +457,3 @@ func recapPhrase(verb string, items []string) string {
 	return fmt.Sprintf("%s %d (%s)", verb, len(items), tail)
 }
 
-// stageGlyph returns a short icon for a sync stage so the streaming log has
-// visual rhythm instead of a wall of text.
-func stageGlyph(stage string) string {
-	switch stage {
-	case "fetch":
-		return "↓ "
-	case "discover":
-		return "◎ "
-	case "snapshot":
-		return "⎘ "
-	case "redaction":
-		return "✱ "
-	case "commit":
-		return "✎ "
-	case "push":
-		return "↑ "
-	case "done":
-		return "✓ "
-	}
-	return "· "
-}
-
-// currentStage returns a short hint describing what sync is doing right now,
-// based on the most recent event. Shown alongside the spinner.
-func currentStage(events []sync.Event) string {
-	if len(events) == 0 {
-		return "starting sync…"
-	}
-	last := events[len(events)-1]
-	if last.Message != "" {
-		return last.Message + "…"
-	}
-	return last.Stage + "…"
-}

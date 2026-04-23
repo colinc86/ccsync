@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/colinc86/ccsync/internal/config"
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/profile"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/theme"
@@ -144,13 +146,34 @@ func (m *profilesModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		target := m.profiles[m.cursor]
 		// Pre-check validity so we don't even bother confirming an
-		// impossible delete (active / last profile).
+		// impossible delete (active / last profile / has descendants).
+		// Mirror of the guards in profile.Delete — duplicated so we
+		// can error up-front instead of dragging the user through the
+		// scary "delete? y/n" prompt just to reject at 'y'. If this
+		// drifts from profile.Delete, the canonical lib check still
+		// fires at confirmation time; this is advisory UX only.
 		if target == m.ctx.State.ActiveProfile {
 			m.err = fmt.Errorf("can't delete the active profile — switch first")
 			return m, nil
 		}
 		if len(m.ctx.Config.Profiles) <= 1 {
 			m.err = fmt.Errorf("can't delete the last remaining profile")
+			return m, nil
+		}
+		var descendants []string
+		for other, spec := range m.ctx.Config.Profiles {
+			if other != target && spec.Extends == target {
+				descendants = append(descendants, other)
+			}
+		}
+		if len(descendants) > 0 {
+			sort.Strings(descendants)
+			quoted := make([]string, len(descendants))
+			for i, n := range descendants {
+				quoted[i] = fmt.Sprintf("%q", n)
+			}
+			m.err = fmt.Errorf("can't delete %q: %s extends it; reparent first",
+				target, strings.Join(quoted, ", "))
 			return m, nil
 		}
 		m.mode = modeConfirmDelete
@@ -161,12 +184,25 @@ func (m *profilesModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		target := m.profiles[m.cursor]
-		m.ctx.State.ActiveProfile = target
-		if err := state.Save(m.ctx.StateDir, m.ctx.State); err != nil {
+		if target == m.ctx.State.ActiveProfile {
+			return m, popScreen()
+		}
+		// Swap on disk: snapshot the old profile's tracked files,
+		// remove what doesn't belong to target, reset target's
+		// last-synced anchor. The next sync materialises target's
+		// tree. Pre-iter-34 this was a bare `state.ActiveProfile =
+		// target`; old-profile files lingered on disk and the next
+		// sync re-attributed them to target, silently polluting
+		// every machine that pulled target.
+		if _, err := profile.SwitchAndSwap(m.ctx.Config, m.ctx.RepoPath, m.ctx.State, m.ctx.StateDir, target,
+			m.ctx.ClaudeDir, m.ctx.ClaudeJSON); err != nil {
 			m.err = err
 			return m, nil
 		}
-		return m, popScreen()
+		return m, tea.Batch(
+			popScreen(),
+			showToast("switched to "+target+" · run sync to materialise", toastSuccess),
+		)
 	}
 	return m, nil
 }
@@ -337,7 +373,11 @@ func (m *profilesModel) applyEdit() tea.Cmd {
 		return nil
 	}
 
-	// Update state: active profile + last-synced-sha map.
+	// Update state: active profile + last-synced-sha + last-synced-at.
+	// Pre-v0.6.20, LastSyncedAt wasn't moved with the rename, so Home's
+	// "last synced Nh ago" display reverted to the snapshot-proxy
+	// fallback after every rename until the next actual sync. Keep
+	// all three per-profile maps in lockstep.
 	if m.ctx.State.ActiveProfile == oldName {
 		m.ctx.State.ActiveProfile = newName
 	}
@@ -345,7 +385,23 @@ func (m *profilesModel) applyEdit() tea.Cmd {
 		m.ctx.State.LastSyncedSHA[newName] = sha
 		delete(m.ctx.State.LastSyncedSHA, oldName)
 	}
-	_ = state.Save(m.ctx.StateDir, m.ctx.State)
+	if ts, ok := m.ctx.State.LastSyncedAt[oldName]; ok {
+		if m.ctx.State.LastSyncedAt == nil {
+			m.ctx.State.LastSyncedAt = map[string]time.Time{}
+		}
+		m.ctx.State.LastSyncedAt[newName] = ts
+		delete(m.ctx.State.LastSyncedAt, oldName)
+	}
+	// Don't swallow this save. By the time we reach it the rename has
+	// already landed in ccsync.yaml AND on disk (the profiles/<name>
+	// directory). If state.json fails to write, the user ends up with
+	// ActiveProfile still pointing at the old name and next sync
+	// erroring with "unknown profile." Surface it so they can fix the
+	// underlying cause (permissions, disk full) and rerun the rename.
+	if err := state.Save(m.ctx.StateDir, m.ctx.State); err != nil {
+		m.err = fmt.Errorf("rename applied to config + repo, but saving state.json failed — fix the underlying issue then rerun this rename to recover: %w", err)
+		return nil
+	}
 
 	m.message = fmt.Sprintf("renamed %q → %q", oldName, newName)
 	m.rebuildList(newName)
@@ -376,8 +432,13 @@ func (m *profilesModel) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		if _, err := os.Stat(dir); err == nil {
 			_ = os.RemoveAll(dir)
 		}
-		// Drop the last-synced pointer so it doesn't linger in state.
+		// Drop the last-synced pointers so they don't linger in state.
+		// Both maps need the cleanup — not just SHA (iteration-4 added
+		// LastSyncedAt; forgetting it here would leave a stale timestamp
+		// that Home's "last synced N ago" would accidentally pick up on
+		// any future profile re-creation with the same name).
 		delete(m.ctx.State.LastSyncedSHA, target)
+		delete(m.ctx.State.LastSyncedAt, target)
 		_ = state.Save(m.ctx.StateDir, m.ctx.State)
 
 		m.message = fmt.Sprintf("deleted profile %q", target)
@@ -431,7 +492,7 @@ func (m *profilesModel) rebuildList(selectName string) {
 func (m *profilesModel) View() string {
 	var sb strings.Builder
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	} else if m.message != "" {
 		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
 	}
@@ -452,18 +513,35 @@ func (m *profilesModel) View() string {
 		sb.WriteString(theme.Hint.Render("no profiles configured — press n to create one"))
 		return sb.String()
 	}
+
+	// Summary chip — total count + the active one pinned so the user
+	// can see "you're on default, there are 3 profiles" at a glance.
+	active := m.ctx.State.ActiveProfile
+	chips := []string{theme.ChipNeutral.Render(fmt.Sprintf("%d profiles", len(m.profiles)))}
+	if active != "" {
+		chips = append(chips, theme.ChipGood.Render("◉ "+active))
+	}
+	sb.WriteString(strings.Join(chips, theme.Rule.Render("  ·  ")) + "\n\n")
+
 	for i, name := range m.profiles {
 		cursor := "  "
 		if m.cursor == i {
 			cursor = theme.Primary.Render("▸ ")
 		}
-		marker := ""
-		if name == m.ctx.State.ActiveProfile {
-			marker = theme.Good.Render(" (active)")
+		// Active profile gets a filled circle + secondary accent;
+		// inactive ones get a hollow ring in muted. Makes the list
+		// read like a radio-button group.
+		var glyph, nameStyled string
+		if name == active {
+			glyph = theme.Good.Render("◉")
+			nameStyled = theme.Primary.Render(name)
+		} else {
+			glyph = theme.Subtle.Render("○")
+			nameStyled = name
 		}
 		spec := m.ctx.Config.Profiles[name]
 		desc := spec.Description
-		line := name + marker
+		line := glyph + " " + nameStyled
 		if desc != "" {
 			line += "  " + theme.Hint.Render("— "+desc)
 		}
@@ -471,15 +549,16 @@ func (m *profilesModel) View() string {
 
 		details := profileDetails(m.ctx.Config, name, spec)
 		if details != "" {
-			sb.WriteString("    " + theme.Hint.Render(details) + "\n")
+			sb.WriteString("      " + theme.Hint.Render(details) + "\n")
 		}
 	}
-	sb.WriteString("\n" +
-		theme.Primary.Render("enter ") + "switch • " +
-		theme.Primary.Render("n ") + "new • " +
-		theme.Primary.Render("e ") + "edit • " +
-		theme.Primary.Render("d ") + "delete • " +
-		theme.Hint.Render("↑↓ move"))
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "enter", label: "switch", primary: true},
+		{cap: "n", label: "new"},
+		{cap: "e", label: "edit"},
+		{cap: "d", label: "delete"},
+		{cap: "↑↓", label: "move"},
+	}))
 	return sb.String()
 }
 
@@ -518,16 +597,21 @@ func (m *profilesModel) renderEdit() string {
 func (m *profilesModel) renderConfirmDelete() string {
 	target := m.profiles[m.cursor]
 	var sb strings.Builder
-	sb.WriteString(theme.Warn.Render("delete profile?") + "\n\n")
-	fmt.Fprintf(&sb, "  profile: %s\n\n", theme.Primary.Render(target))
-	sb.WriteString(theme.Hint.Render(
-		"this removes the profile from ccsync.yaml, drops the repo's profiles/"+target+"/\n"+
-			"directory (next sync will commit the deletion), and clears the\n"+
-			"last-synced pointer. other profiles extending this one will end up\n"+
-			"with a broken chain — consider renaming instead.") + "\n\n")
-	sb.WriteString(
-		theme.Primary.Render("y") + "  confirm delete • " +
-			theme.Hint.Render("n / esc cancel"))
+	// Red-bordered card — delete is destructive; the visual match to
+	// "disable encryption" and the sync-conflict hero keeps the
+	// "this matters" language consistent.
+	body := theme.Bad.Render("! DELETE PROFILE") + "  " +
+		theme.Subtle.Render(target) + "\n" +
+		theme.Subtle.Render(
+			"removes it from ccsync.yaml · drops profiles/"+target+"/ on next sync\n"+
+				"clears the last-synced pointer · profiles that extend this one\n"+
+				"will end up with a broken chain — consider renaming instead")
+	sb.WriteString(theme.CardConflict.Width(60).Render(body) + "\n\n")
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "y", label: "confirm delete", primary: true},
+		{cap: "n", label: "cancel"},
+		{cap: "esc", label: "cancel"},
+	}))
 	return sb.String()
 }
 
@@ -540,7 +624,7 @@ func profileDetails(cfg *config.Config, name string, spec config.ProfileSpec) st
 			parts = append(parts, "extends "+strings.Join(resolved.Chain[1:], " ← "))
 		}
 		if n := len(resolved.PathExcludes); n > 0 {
-			parts = append(parts, fmt.Sprintf("%d exclude rule(s)", n))
+			parts = append(parts, humanize.Count(n, "exclude rule"))
 		}
 	}
 	if len(spec.HostClasses) > 0 {

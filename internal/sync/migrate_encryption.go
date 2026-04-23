@@ -175,5 +175,21 @@ func commitMigration(ctx context.Context, in Inputs, subject string) (Result, er
 	if err := repo.Push(ctx, in.Auth); err != nil {
 		return Result{}, err
 	}
+	// Advance LastSyncedSHA/LastSyncedAt just like resolve + rollback.
+	// Without this the user's next sync uses the pre-migration commit as
+	// the base — currently harmless because the old blob is still
+	// readable from git history, but the same class of "stale state that
+	// could bite us under a history rewrite or GC" bug we cleaned up in
+	// iteration 1. "enable encryption" and "disable encryption" become
+	// the op labels the advance helper puts in error messages.
+	op := subject
+	if strings.HasPrefix(op, "enable ") {
+		op = "enable encryption"
+	} else if strings.HasPrefix(op, "disable ") {
+		op = "disable encryption"
+	}
+	if err := advanceStateToHead(in, repo, commitSHA, op); err != nil {
+		return Result{CommitSHA: commitSHA}, err
+	}
 	return Result{CommitSHA: commitSHA}, nil
 }

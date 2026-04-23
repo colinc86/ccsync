@@ -43,6 +43,14 @@ type State struct {
 	HostClass     string            `json:"hostClass,omitempty"` // freeform label (work, personal); informational for now
 	LastSyncedSHA map[string]string `json:"lastSyncedSHA,omitempty"`
 
+	// LastSyncedAt records the UTC timestamp at which LastSyncedSHA was
+	// last advanced for each profile. Used by the Home dashboard to show
+	// "last synced Nh ago" without relying on the snapshot directory as
+	// a proxy (which undercounted push-only syncs since snapshots are
+	// only taken pre-local-write). Zero value on load for existing
+	// users; backfilled on first sync under the new code.
+	LastSyncedAt map[string]time.Time `json:"lastSyncedAt,omitempty"`
+
 	// Commit identity — used as git author on every sync commit. Unset means
 	// fallback to hostname / hostname@ccsync.local.
 	AuthorName  string `json:"authorName,omitempty"`
@@ -115,6 +123,13 @@ type State struct {
 	// is preserved through any sync touching mcpServers (same splice
 	// trick as jsonfilter.PreserveLocalExcludes).
 	DeniedMCPServers []string `json:"deniedMcpServers,omitempty"`
+
+	// TipsSeen tracks one-time educational nudges the user has already
+	// been shown, so we don't pester them on every launch. Canonical
+	// tip IDs are defined alongside where they're surfaced (e.g.
+	// "palette" for the ctrl+k teaching toast). Adding a tip ID to
+	// the list is the "mark as read" action.
+	TipsSeen []string `json:"tipsSeen,omitempty"`
 }
 
 // CategoryPolicies is the (category, direction) → policy matrix stored
@@ -232,6 +247,32 @@ func setDir(dp *DirectionPolicy, dir Direction, policy string) {
 	case DirPull:
 		dp.Pull = policy
 	}
+}
+
+// TipSeen reports whether the named one-time tip (e.g. "palette") has
+// already been surfaced to the user. Callers that want to show an
+// educational nudge exactly once check this flag, render the tip
+// when false, and call MarkTipSeen to flip it.
+func (s *State) TipSeen(id string) bool {
+	if s == nil {
+		return false
+	}
+	for _, t := range s.TipsSeen {
+		if t == id {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkTipSeen adds id to the TipsSeen list if it isn't already there.
+// Idempotent — calling twice is a no-op. Caller is responsible for
+// persisting via state.Save.
+func (s *State) MarkTipSeen(id string) {
+	if s == nil || s.TipSeen(id) {
+		return
+	}
+	s.TipsSeen = append(s.TipsSeen, id)
 }
 
 // IsPathDenied reports whether a repo-relative path (already stripped
@@ -362,7 +403,10 @@ func Load(stateDir string) (*State, error) {
 	data, err := os.ReadFile(Path(stateDir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &State{LastSyncedSHA: map[string]string{}}, nil
+			return &State{
+				LastSyncedSHA: map[string]string{},
+				LastSyncedAt:  map[string]time.Time{},
+			}, nil
 		}
 		return nil, err
 	}
@@ -372,6 +416,9 @@ func Load(stateDir string) (*State, error) {
 	}
 	if s.LastSyncedSHA == nil {
 		s.LastSyncedSHA = map[string]string{}
+	}
+	if s.LastSyncedAt == nil {
+		s.LastSyncedAt = map[string]time.Time{}
 	}
 	return &s, nil
 }

@@ -18,6 +18,7 @@ import (
 	cryptopkg "github.com/colinc86/ccsync/internal/crypto"
 	"github.com/colinc86/ccsync/internal/doctor"
 	"github.com/colinc86/ccsync/internal/gitx"
+	"github.com/colinc86/ccsync/internal/humanize"
 	ignorepkg "github.com/colinc86/ccsync/internal/ignore"
 	"github.com/colinc86/ccsync/internal/profile"
 	"github.com/colinc86/ccsync/internal/secrets"
@@ -30,7 +31,12 @@ import (
 	"github.com/colinc86/ccsync/internal/why"
 )
 
-const version = "0.6.4"
+// version is settable via ldflags (see .goreleaser.yaml:
+// -X main.version={{.Version}}) so release builds pick up the tag
+// automatically. Local builds (go build, make build) fall back to
+// the hardcoded value committed in this file. Declared var, not
+// const — the Go linker can only override variables.
+var version = "0.7.0"
 
 func init() {
 	updater.SetCurrentVersion(version)
@@ -134,7 +140,7 @@ func runHeadlessSync(args []string) int {
 		profile = "default"
 	}
 	repoPath := filepath.Join(ctx.StateDir, "repo")
-	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
+	auth := tui.BuildAuth(ctx)
 
 	res, err := sync.RunWithRetry(context.Background(), sync.Inputs{
 		Config:      ctx.Config,
@@ -164,11 +170,11 @@ func runHeadlessSync(args []string) int {
 	}
 	fmt.Println()
 	if len(res.Plan.Conflicts) > 0 {
-		fmt.Fprintf(os.Stderr, "%d conflict(s) — resolve in the TUI\n", len(res.Plan.Conflicts))
+		fmt.Fprintf(os.Stderr, "%s — resolve in the TUI\n", humanize.Count(len(res.Plan.Conflicts), "conflict"))
 		return 2
 	}
 	if len(res.MissingSecrets) > 0 {
-		fmt.Fprintf(os.Stderr, "%d file(s) skipped due to missing secrets\n", len(res.MissingSecrets))
+		fmt.Fprintf(os.Stderr, "%s skipped due to missing secrets\n", humanize.Count(len(res.MissingSecrets), "file"))
 		return 3
 	}
 	return 0
@@ -267,12 +273,13 @@ func runProfile(args []string) int {
 			fmt.Fprintf(os.Stderr, "no such profile: %q\n", target)
 			return 1
 		}
-		meta, err := profile.Switch(ctx.State, ctx.StateDir, target, nil)
+		meta, err := profile.SwitchAndSwap(ctx.Config, ctx.RepoPath, ctx.State, ctx.StateDir, target, ctx.ClaudeDir, ctx.ClaudeJSON)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ccsync:", err)
 			return 1
 		}
 		fmt.Printf("active profile: %s (backup %s)\n", target, meta.ID)
+		fmt.Println("next: `ccsync sync` to materialize the profile's content")
 		return 0
 
 	case "create":
@@ -348,9 +355,9 @@ func runSnapshot(args []string) int {
 			if s.Pinned {
 				pin = " [pinned]"
 			}
-			fmt.Printf("  %s  %s  %d file(s)%s\n",
+			fmt.Printf("  %s  %s  %s%s\n",
 				s.CreatedAt.Local().Format("2006-01-02 15:04:05"),
-				s.ID, len(s.Files), pin)
+				s.ID, humanize.Count(len(s.Files), "file"), pin)
 		}
 		return 0
 
@@ -391,7 +398,16 @@ func runRollback(args []string) int {
 		return 1
 	}
 	if len(snaps) == 0 {
+		// Snapshots are taken pre-local-write, so push-only machines
+		// (the common case for the machine where edits originate)
+		// never accumulate any. Users on such machines reaching for
+		// rollback usually want to undo a push, which is a different
+		// tool — point them there rather than leaving them at a dead
+		// end.
 		fmt.Fprintln(os.Stderr, "ccsync: no snapshot to roll back to")
+		fmt.Fprintln(os.Stderr, "  snapshots are only taken on pulls/merges that write locally;")
+		fmt.Fprintln(os.Stderr, "  to undo a push, use `ccsync rollback --commit <sha>` instead")
+		fmt.Fprintln(os.Stderr, "  (see recent commits with: git -C ~/.ccsync/repo log --oneline)")
 		return 1
 	}
 	latest := snaps[0]
@@ -418,7 +434,7 @@ func runRollbackCommit(commitSHA string) int {
 	if profileName == "" {
 		profileName = "default"
 	}
-	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
+	auth := tui.BuildAuth(ctx)
 	in := sync.Inputs{
 		Config: ctx.Config, Profile: profileName,
 		ClaudeDir: ctx.ClaudeDir, ClaudeJSON: ctx.ClaudeJSON,
@@ -441,8 +457,8 @@ func runRollbackCommit(commitSHA string) int {
 	}
 	fmt.Printf("rolled back to %s (new commit %s)\n", commitSHA[:7], short)
 	if len(res.MissingSecrets) > 0 {
-		fmt.Fprintf(os.Stderr, "%d file(s) skipped due to missing secrets; run `ccsync` and use RedactionReview\n",
-			len(res.MissingSecrets))
+		fmt.Fprintf(os.Stderr, "%s skipped due to missing secrets; run `ccsync` and use RedactionReview\n",
+			humanize.Count(len(res.MissingSecrets), "file"))
 		return 3
 	}
 	return 0
@@ -620,7 +636,7 @@ func runDecrypt(args []string) int {
 // they operate on every file under profiles/ regardless of which profile
 // is active.
 func buildMigrationInputs(ctx *tui.AppContext) sync.Inputs {
-	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
+	auth := tui.BuildAuth(ctx)
 	return sync.Inputs{
 		RepoPath:    ctx.RepoPath,
 		StateDir:    ctx.StateDir,
@@ -676,7 +692,7 @@ func runWatch(args []string) int {
 	if profile == "" {
 		profile = "default"
 	}
-	auth, _ := gitx.AuthConfig{Kind: gitx.AuthSSH, SSHKeyPath: ctx.State.SSHKeyPath}.Resolve()
+	auth := tui.BuildAuth(ctx)
 	syncIn := sync.Inputs{
 		Config:      ctx.Config,
 		Profile:     profile,

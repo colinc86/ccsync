@@ -63,15 +63,25 @@ func Run(ctx context.Context, in Inputs) (*state.State, error) {
 		HTTPSUser:  in.HTTPSUser,
 	}.Resolve()
 	if authErr != nil {
-		return nil, fmt.Errorf("auth setup failed: %w "+
-			"(hint: unlock your SSH key with `ssh-add`, or use `--auth https` with a token)",
-			authErr)
+		return nil, fmt.Errorf("auth setup failed: %w%s", authErr, authHint(in.Auth))
 	}
 
 	if _, err := gitx.Clone(ctx, targetURL, repoPath, auth); err != nil {
 		// Clean up the partial clone directory so the user can retry
 		// without hitting "already exists" from the guard above.
 		_ = os.RemoveAll(repoPath)
+
+		// Only fall back to Init for "remote is empty" — that's the
+		// legitimate "I just created this repo and it has no commits
+		// yet" case. For auth failures, network errors, or
+		// not-found, we must surface the error instead of silently
+		// bootstrapping into a broken state where every future sync
+		// fails with the same auth error. Pre-v0.6.7 the init fallback
+		// was unconditional: clone-auth-failed → init-succeeded →
+		// user sees "bootstrapped ✓" then every sync errors.
+		if !errors.Is(err, gitx.ErrEmptyRemote) {
+			return nil, err
+		}
 		if _, initErr := gitx.Init(repoPath, targetURL); initErr != nil {
 			return nil, fmt.Errorf("clone failed (%v) and init fallback failed: %w", err, initErr)
 		}
@@ -79,6 +89,17 @@ func Run(ctx context.Context, in Inputs) (*state.State, error) {
 
 	if err := seedRepo(repoPath); err != nil {
 		return nil, fmt.Errorf("seed repo: %w", err)
+	}
+
+	// Ensure the requested profile exists in ccsync.yaml. If the user
+	// bootstrapped with --profile work against an empty (init-fallback)
+	// remote, the seeded yaml only has "default"; without this step the
+	// next sync would die with "unknown profile" and the user is stuck
+	// with no indication of how to recover. If the remote already had a
+	// matching entry (normal clone of an existing fleet repo), this is
+	// a no-op.
+	if err := ensureRequestedProfile(repoPath, in.Profile); err != nil {
+		return nil, fmt.Errorf("ensure profile %q: %w", in.Profile, err)
 	}
 
 	st, err := state.Load(in.StateDir)
@@ -95,6 +116,22 @@ func Run(ctx context.Context, in Inputs) (*state.State, error) {
 		return nil, err
 	}
 	return st, nil
+}
+
+// authHint returns a parenthesized recovery hint tailored to the auth
+// kind being attempted. Pre-v0.6.7 this was a single string that told
+// HTTPS users to "unlock your SSH key with `ssh-add`" — confusing for
+// the exact users whose path had already picked HTTPS. Separating the
+// hints by kind keeps the tail of the error relevant to whatever the
+// user was trying to do.
+func authHint(k state.AuthKind) string {
+	switch k {
+	case state.AuthSSH:
+		return " (hint: unlock your SSH key with `ssh-add`, or configure a specific key via the Settings screen)"
+	case state.AuthHTTPS:
+		return " (hint: set GITHUB_TOKEN / GH_TOKEN, or configure a token for this host)"
+	}
+	return ""
 }
 
 func gitxKind(k state.AuthKind) gitx.AuthKind {
@@ -166,6 +203,7 @@ func seedRepo(repoPath string) error {
 	seeds := map[string][]byte{
 		".syncignore": []byte(defaultSyncignore()),
 		"ccsync.yaml": config.DefaultYAML(),
+		".gitignore":  config.DefaultGitignore(),
 	}
 	for name, data := range seeds {
 		path := filepath.Join(repoPath, name)
@@ -185,4 +223,29 @@ func defaultSyncignore() string {
 		return ""
 	}
 	return c.DefaultSyncignore
+}
+
+// ensureRequestedProfile loads ccsync.yaml from repoPath and, if the
+// requested profile isn't in it, adds an entry with a minimal
+// description and re-saves atomically via SaveWithBackup. A no-op when
+// the profile is already present or the config can't be loaded (the
+// latter case is surfaced as an error because the subsequent sync
+// would fail anyway).
+func ensureRequestedProfile(repoPath, profile string) error {
+	if profile == "" {
+		return nil
+	}
+	cfgPath := filepath.Join(repoPath, "ccsync.yaml")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	if _, ok := cfg.Profiles[profile]; ok {
+		return nil
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]config.ProfileSpec{}
+	}
+	cfg.Profiles[profile] = config.ProfileSpec{Description: profile + " profile"}
+	return cfg.SaveWithBackup(cfgPath)
 }

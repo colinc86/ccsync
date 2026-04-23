@@ -71,13 +71,37 @@ latest_tag() {
 download_asset() {
   local tag="$1" asset="$2" out="$3"
   local direct="https://github.com/$REPO/releases/download/$tag/$asset"
-  if curl -fsSL "$direct" -o "$out" 2>/dev/null; then
+  # Capture curl's HTTP status so we can distinguish "not found"
+  # (try authenticated fallback) from network/DNS errors (stop and
+  # surface the real problem). Pre-v0.6.18 any failure was silenced
+  # to /dev/null and reported as "not publicly downloadable" — wrong
+  # for every non-404 case, and users ran off to set GITHUB_TOKEN
+  # when the actual problem was no network.
+  local http_code curl_err errfile
+  errfile="$(mktemp -t ccsync-curl.XXXXXX)"
+  http_code="$(curl -sSL -o "$out" -w '%{http_code}' "$direct" 2>"$errfile" || true)"
+  curl_err="$(cat "$errfile" 2>/dev/null || true)"
+  rm -f "$errfile"
+  if [[ "$http_code" == "200" ]]; then
     return 0
+  fi
+  if [[ "$http_code" != "404" && "$http_code" != "403" && "$http_code" != "401" ]]; then
+    # Not an auth/not-found — could be DNS, TCP refused, 5xx, etc.
+    # Surface curl's own diagnostic instead of pretending we know.
+    echo "error: couldn't download $asset" >&2
+    echo "       URL: $direct" >&2
+    if [[ -n "$http_code" && "$http_code" != "000" ]]; then
+      echo "       HTTP $http_code" >&2
+    fi
+    if [[ -n "$curl_err" ]]; then
+      echo "       $curl_err" >&2
+    fi
+    return 1
   fi
   local auth; auth="$(auth_header)"
   if [[ -z "$auth" ]]; then
-    echo "error: asset not publicly downloadable." >&2
-    echo "       set GITHUB_TOKEN or run \`gh auth login\` and retry." >&2
+    echo "error: asset not publicly downloadable (HTTP $http_code)." >&2
+    echo "       if $REPO is private, set GITHUB_TOKEN or run \`gh auth login\` and retry." >&2
     return 1
   fi
   # Resolve asset id from the tag metadata.
@@ -131,8 +155,24 @@ main() {
   mkdir -p "$INSTALL_DIR"
   mv "$tmp/$BINARY" "$INSTALL_DIR/$BINARY"
   chmod 0755 "$INSTALL_DIR/$BINARY"
+
+  # Sanity: the binary should run. Catches architecture mismatch
+  # (wrong arch download), corrupted tarballs, and missing dylibs
+  # BEFORE the user hits them on first real invocation. A failure
+  # here means something weird about the install — better to surface
+  # it now than let them discover at 9pm on a Friday.
+  local installed_version
+  if installed_version="$("$INSTALL_DIR/$BINARY" --version 2>&1)"; then
+    :
+  else
+    echo "error: installed $BINARY but couldn't run it (exec failed)." >&2
+    echo "       try \`file $INSTALL_DIR/$BINARY\` — the download may be corrupt or the wrong arch." >&2
+    exit 1
+  fi
+
   echo
-  echo "installed: $INSTALL_DIR/$BINARY"
+  echo "installed: $installed_version"
+  echo "           $INSTALL_DIR/$BINARY"
   echo
   if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo "NOTE: $INSTALL_DIR is not in your PATH."

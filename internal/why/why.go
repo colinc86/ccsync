@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/colinc86/ccsync/internal/config"
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/ignore"
 	"github.com/colinc86/ccsync/internal/jsonfilter"
 )
@@ -126,7 +127,7 @@ func Explain(in Inputs, target string) (*Trace, error) {
 	if resolved.HasExcludes() {
 		if matchedPat := firstMatch(resolved.ExcludeRules(), path); matchedPat != "" {
 			t.Steps = append(t.Steps, Step{
-				Rule: fmt.Sprintf("profile[%s].exclude", profileName),
+				Rule:    fmt.Sprintf("profile[%s].exclude", profileName),
 				Pattern: matchedPat, Matched: true,
 				Note: fmt.Sprintf("excluded on this machine (profile %q)", profileName),
 			})
@@ -135,7 +136,7 @@ func Explain(in Inputs, target string) (*Trace, error) {
 		}
 		t.Steps = append(t.Steps, Step{
 			Rule: fmt.Sprintf("profile[%s].exclude", profileName), Matched: false,
-			Note: fmt.Sprintf("no match in %d pattern(s)", len(resolved.PathExcludes)),
+			Note: "no match in " + humanize.Count(len(resolved.PathExcludes), "pattern"),
 		})
 	}
 
@@ -145,9 +146,9 @@ func Explain(in Inputs, target string) (*Trace, error) {
 		// asked about a whole JSON file, fall through to OutcomeSynced.
 		if jsonKey == "" {
 			t.Steps = append(t.Steps, Step{
-				Rule: "jsonFiles[" + jsonPath + "]",
+				Rule:    "jsonFiles[" + jsonPath + "]",
 				Matched: true,
-				Note: fmt.Sprintf("%d include / %d exclude / %d redact rule(s) applied on this file",
+				Note: fmt.Sprintf("%d include / %d exclude / %d redact rules applied on this file",
 					len(rule.Include), len(rule.Exclude), len(rule.Redact)),
 			})
 		} else {
@@ -155,7 +156,7 @@ func Explain(in Inputs, target string) (*Trace, error) {
 			// exclude wins over redact wins over include.
 			if matched := firstJSONMatch(rule.Exclude, jsonKey); matched != "" {
 				t.Steps = append(t.Steps, Step{
-					Rule: "jsonFiles[" + jsonPath + "].exclude",
+					Rule:    "jsonFiles[" + jsonPath + "].exclude",
 					Pattern: matched, Matched: true,
 					Note: "this key is dropped before push",
 				})
@@ -164,7 +165,7 @@ func Explain(in Inputs, target string) (*Trace, error) {
 			}
 			if matched := firstJSONMatch(rule.Redact, jsonKey); matched != "" {
 				t.Steps = append(t.Steps, Step{
-					Rule: "jsonFiles[" + jsonPath + "].redact",
+					Rule:    "jsonFiles[" + jsonPath + "].redact",
 					Pattern: matched, Matched: true,
 					Note: "value extracted to keychain; placeholder committed instead",
 				})
@@ -173,7 +174,7 @@ func Explain(in Inputs, target string) (*Trace, error) {
 			}
 			if matched := firstJSONMatch(rule.Include, jsonKey); matched != "" {
 				t.Steps = append(t.Steps, Step{
-					Rule: "jsonFiles[" + jsonPath + "].include",
+					Rule:    "jsonFiles[" + jsonPath + "].include",
 					Pattern: matched, Matched: true,
 					Note: "key passes through unchanged",
 				})

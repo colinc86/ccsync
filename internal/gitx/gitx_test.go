@@ -7,7 +7,25 @@ import (
 	"testing"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 )
+
+// initBareWithMainHEAD creates a bare repo with HEAD pointing at
+// refs/heads/main so Clone resolves after our first push. Mirrors
+// the helper in sync_test.go and harness.NewScenario — gitx.Init
+// pushes to main (DefaultBranch) but go-git's PlainInit leaves the
+// bare's HEAD at master, so we explicitly align.
+func initBareWithMainHEAD(t *testing.T, path string) {
+	t.Helper()
+	r, err := git.PlainInit(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(DefaultBranch))
+	if err := r.Storer.SetReference(ref); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestLocalRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
@@ -15,9 +33,7 @@ func TestLocalRoundTrip(t *testing.T) {
 	wt1Dir := filepath.Join(tmp, "wt1")
 	wt2Dir := filepath.Join(tmp, "wt2")
 
-	if _, err := git.PlainInit(bareDir, true); err != nil {
-		t.Fatal(err)
-	}
+	initBareWithMainHEAD(t, bareDir)
 
 	ctx := context.Background()
 
@@ -107,9 +123,7 @@ func TestPullFastForward(t *testing.T) {
 	wt1Dir := filepath.Join(tmp, "wt1")
 	wt2Dir := filepath.Join(tmp, "wt2")
 
-	if _, err := git.PlainInit(bareDir, true); err != nil {
-		t.Fatal(err)
-	}
+	initBareWithMainHEAD(t, bareDir)
 
 	ctx := context.Background()
 

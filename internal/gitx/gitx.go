@@ -33,10 +33,29 @@ func Clone(ctx context.Context, url, path string, auth transport.AuthMethod) (*R
 	return &Repo{repo: r, path: path}, nil
 }
 
+// DefaultBranch is the branch ccsync creates (and pushes to) when it
+// initializes a fresh local repo. "main" matches the default that
+// `git init --bare` picks since Git 2.28+ and the one GitHub uses for
+// new repos — so the bare repo's HEAD → refs/heads/main symbolic
+// reference resolves after our first push, and a second machine's
+// `ccsync bootstrap` can Clone cleanly. go-git's PlainInit used to
+// default to "master", which left the bare's HEAD dangling and broke
+// machine-#2-joins with "reference not found". This constant is the
+// single source of truth; keep it in sync with any harness / test
+// that reads blobs from the bare directly.
+const DefaultBranch = "main"
+
 // Init initializes a new repo at path. If remoteURL is non-empty, sets origin.
 func Init(path, remoteURL string) (*Repo, error) {
 	r, err := git.PlainInit(path, false)
 	if err != nil {
+		return nil, Translate(err)
+	}
+	// go-git's PlainInit defaults HEAD to refs/heads/master; explicitly
+	// override to refs/heads/main so first-push aligns with modern
+	// bare-repo HEAD defaults. See DefaultBranch comment.
+	headRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(DefaultBranch))
+	if err := r.Storer.SetReference(headRef); err != nil {
 		return nil, Translate(err)
 	}
 	if remoteURL != "" {

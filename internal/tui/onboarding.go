@@ -96,7 +96,15 @@ func (m *onboardingModel) updatePolicy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
-	_ = state.Save(m.ctx.StateDir, m.ctx.State)
+	// Surface state.Save errors — without this the user could proceed
+	// into bootstrap with the default auto policy even after picking
+	// "review each" (state dir read-only, disk full, etc.). The screen
+	// stays on the policy step so the user can retry once the
+	// underlying issue is addressed.
+	if err := state.Save(m.ctx.StateDir, m.ctx.State); err != nil {
+		m.err = fmt.Errorf("couldn't save policy selection: %w", err)
+		return m, nil
+	}
 	m.step = onboardBootstrap
 	return m, switchTo(newBootstrapWizard(m.ctx))
 }
@@ -124,7 +132,14 @@ func applyReviewPreset(st *state.State, dir state.Direction) {
 // profile picker screen, which also flips OnboardingComplete.
 func (m *onboardingModel) finish() (tea.Model, tea.Cmd) {
 	m.ctx.State.OnboardingComplete = true
-	_ = state.Save(m.ctx.StateDir, m.ctx.State)
+	if err := state.Save(m.ctx.StateDir, m.ctx.State); err != nil {
+		// Surface rather than swallow — if the state save fails here
+		// (read-only state dir, disk full), the user would otherwise
+		// see the welcome screen again on next launch despite having
+		// "finished" onboarding.
+		m.err = fmt.Errorf("couldn't save onboarding state: %w", err)
+		return m, nil
+	}
 
 	if m.ctx.State.SyncRepoURL != "" {
 		// Under auto mode, SyncPreview auto-applies when clean — so the
@@ -138,7 +153,7 @@ func (m *onboardingModel) finish() (tea.Model, tea.Cmd) {
 func (m *onboardingModel) View() string {
 	var sb strings.Builder
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	}
 
 	switch m.step {
@@ -158,52 +173,83 @@ func (m *onboardingModel) View() string {
 
 func (m *onboardingModel) renderPolicy() string {
 	var sb strings.Builder
+	sb.WriteString(theme.Wordmark("sync policy") + "\n\n")
 	sb.WriteString(theme.Heading.Render("how hands-on do you want sync to be?") + "\n\n")
 	sb.WriteString(theme.Hint.Render(
-		"ccsync can sync silently in the background or pause on every push/pull\n"+
+		"ccsync can run silently in the background or pause on every push/pull\n"+
 			"to let you review each agent, skill, command, MCP server, etc. You\n"+
 			"can tweak per-category policies anytime from Settings → review policies.") + "\n\n")
 
-	fmt.Fprintf(&sb, "  %s  auto-sync everything %s\n",
-		theme.Primary.Render("1"),
-		theme.Hint.Render("(default — install, sync, forget)"))
-	fmt.Fprintf(&sb, "  %s  review each push before it leaves this machine %s\n",
-		theme.Primary.Render("2"),
-		theme.Hint.Render("(pulls stay silent)"))
-	fmt.Fprintf(&sb, "  %s  review every push AND pull %s\n",
-		theme.Primary.Render("3"),
-		theme.Hint.Render("(fully hands-on)"))
-	sb.WriteString("\n" + theme.Hint.Render("1/2/3 choose • enter = 1 (auto) • s skip"))
+	writeChoice := func(key, verb, hint string) {
+		fmt.Fprintf(&sb, "  %s  %s\n      %s\n\n",
+			theme.Keycap.Render(key),
+			theme.Primary.Render(verb),
+			theme.Hint.Render(hint))
+	}
+	writeChoice("1", "auto-sync everything",
+		"default — install, sync, forget. the low-friction path.")
+	writeChoice("2", "review each push",
+		"pause before any outbound change; pulls stay silent")
+	writeChoice("3", "review push AND pull",
+		"fully hands-on — every direction surfaces a review screen")
+
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "1-3", label: "choose", primary: true},
+		{cap: "enter", label: "1 (auto)"},
+		{cap: "s", label: "skip"},
+	}))
 	return sb.String()
 }
 
 func (m *onboardingModel) renderWelcome() string {
 	var sb strings.Builder
-	sb.WriteString(theme.Heading.Render("ccsync — sync your Claude Code config across machines") + "\n\n")
-	sb.WriteString(
-		"  " + theme.Secondary.Render("what this is:") + "\n" +
-			"  keeps " + theme.Primary.Render("~/.claude/") + " and " + theme.Primary.Render("~/.claude.json") +
-			" in sync across your machines via a " + theme.Primary.Render("git repo you own") + ".\n\n" +
-			"  " + theme.Secondary.Render("what happens next:") + "\n" +
-			"  point ccsync at a repo (or create one on the spot) and hit go.\n" +
-			"  ccsync figures out the rest — no profile names, no manual merges.\n\n" +
-			"  " + theme.Secondary.Render("under a minute.") + "\n\n")
-	sb.WriteString(theme.Primary.Render("enter ") + "start • " + theme.Hint.Render("s skip (set up later)"))
+	sb.WriteString(theme.Wordmark("welcome") + "\n\n")
+
+	// Hero welcome card — first impression, so it's generous with
+	// whitespace and leans on the palette for identity. Accent-
+	// bordered (neutral card would read as "system message");
+	// tagline below the big name sells the product in one line.
+	var card strings.Builder
+	card.WriteString(theme.Primary.Render("sync your Claude Code config across every machine you use") + "\n\n")
+	card.WriteString(theme.Subtle.Render("what ccsync does") + "\n")
+	card.WriteString("  keeps " + theme.Secondary.Render("~/.claude/") + " and " +
+		theme.Secondary.Render("~/.claude.json") + "\n")
+	card.WriteString("  in sync via a " + theme.Secondary.Render("git repo you own") + "\n\n")
+	card.WriteString(theme.Subtle.Render("what's coming next") + "\n")
+	card.WriteString("  you point ccsync at a repo (or create one on the spot)\n")
+	card.WriteString("  ccsync handles profile resolution, redaction, merges,\n")
+	card.WriteString("  and rollback safety without further configuration")
+	sb.WriteString(theme.Card.Width(60).Render(card.String()) + "\n\n")
+
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "enter", label: "start", primary: true},
+		{cap: "s", label: "skip (set up later)"},
+	}))
 	return sb.String()
 }
 
 func (m *onboardingModel) renderDone() string {
 	var sb strings.Builder
-	sb.WriteString(theme.Good.Render("all set ✓") + "\n\n")
+	sb.WriteString(theme.Wordmark("all set") + "\n\n")
+
+	var body string
 	if m.ctx.State.SyncRepoURL != "" {
-		sb.WriteString(theme.Hint.Render(
-			"press any key to review your first sync.\n" +
-				"on a fresh machine, try `p` in the preview for pull-only\n" +
-				"so you don't push anything local up until you're ready.") + "\n")
+		body = theme.Good.Bold(true).Render("✓ READY TO SYNC") + "\n" +
+			theme.Subtle.Render("press a key to review your first sync. on a fresh\n"+
+				"machine, try 'p' for pull-only so nothing pushes until\n"+
+				"you've had a look.")
 	} else {
-		sb.WriteString(theme.Hint.Render(
-			"you skipped setup — run `ccsync bootstrap --repo <URL>` when\n" +
-				"you're ready, or reopen this from Home.") + "\n")
+		body = theme.Warn.Bold(true).Render("◦ SETUP SKIPPED") + "\n" +
+			theme.Subtle.Render("run `ccsync bootstrap --repo <URL>` when you're\n"+
+				"ready, or reopen this flow from Home.")
 	}
+	card := theme.CardClean
+	if m.ctx.State.SyncRepoURL == "" {
+		card = theme.CardNeutral
+	}
+	sb.WriteString(card.Width(56).Render(body) + "\n\n")
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "any key", label: "continue", primary: true},
+	}))
 	return sb.String()
 }

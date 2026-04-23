@@ -2,6 +2,46 @@ package category
 
 import "encoding/json"
 
+// MCPOnlyDiff reports whether the only top-level key that differs
+// between local and remote claude.json is "mcpServers". The sync
+// engine uses this to route changes through the MCPServers review
+// category when they're MCP-specific rather than general-settings
+// touching — which makes a user-configured
+// MCPServers.push=review policy actually fire on new MCP additions,
+// instead of getting misrouted to GeneralSettings.
+//
+// Precondition: caller has already determined local != remote (this
+// function answers "given a diff, is it mcp-only"; it doesn't return
+// true for the no-diff case). A side that's empty bytes strips to {}
+// (legitimate absent file); a side that's malformed JSON returns
+// false — we won't claim an MCP-only diff against a garbage document,
+// because the user's MCPServers-scoped push policy is the wrong
+// channel to route JSON-corruption through. The normal sync flow
+// never reaches here with malformed bytes (jsonfilter.Apply errors
+// first), but the public API is called from other paths too.
+func MCPOnlyDiff(local, remote []byte) bool {
+	l, lOK := stripMCP(local)
+	r, rOK := stripMCP(remote)
+	if !lOK || !rOK {
+		return false
+	}
+	return equalJSON(l, r)
+}
+
+// stripMCP returns (doc-without-mcpServers, ok). ok=false when data
+// was non-empty but failed to parse; ok=true for empty or valid JSON.
+func stripMCP(data []byte) (map[string]any, bool) {
+	if len(data) == 0 {
+		return map[string]any{}, true
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, false
+	}
+	delete(doc, "mcpServers")
+	return doc, true
+}
+
 // MCPServerDiff computes the per-server diff for a three-way merge of
 // ~/.claude.json. Returns the list of server-name keys whose definition
 // is new or has changed across the three sides, so the review UI can
@@ -45,8 +85,8 @@ func MCPServerDiff(base, local, remote []byte) []MCPItem {
 		// The reviewer cares about what *would change locally* or *would
 		// be pushed from local*. We include both perspectives.
 		item := MCPItem{
-			Name:  name,
-			Local: raw(lv, lOK),
+			Name:   name,
+			Local:  raw(lv, lOK),
 			Remote: raw(rv, rOK),
 			Base:   raw(bv, bOK),
 		}

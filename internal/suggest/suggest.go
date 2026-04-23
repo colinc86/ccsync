@@ -32,11 +32,11 @@ type Suggestion struct {
 // filtering out of sync whenever it sees them in a plan. Deliberately
 // narrow — better to miss a suggestion than to nag.
 var NoisyExtensions = map[string]bool{
-	".tmp": true,
-	".log": true,
-	".swp": true,
-	".pid": true,
-	".bak": true,
+	".tmp":  true,
+	".log":  true,
+	".swp":  true,
+	".pid":  true,
+	".bak":  true,
 	".lock": true,
 }
 
@@ -81,6 +81,12 @@ func Analyze(plan *sync.Plan, dismissed []string) []Suggestion {
 			continue
 		}
 		paths := byExt[ext]
+		// Sort before sampling so the displayed "examples" are stable
+		// across calls. plan.Actions iteration order isn't guaranteed
+		// (it comes from a Go map range), so without sorting, refresh-
+		// heavy users would see the same suggestion cycle through
+		// different sample file names on every re-render.
+		sort.Strings(paths)
 		// Cap at 5 sample paths for display.
 		if len(paths) > 5 {
 			paths = paths[:5]
@@ -88,7 +94,7 @@ func Analyze(plan *sync.Plan, dismissed []string) []Suggestion {
 		out = append(out, Suggestion{
 			Kind:    KindSyncignore,
 			Pattern: pat,
-			Reason:  "noisy " + ext + " file(s) appear in sync — usually machine-local",
+			Reason:  "noisy " + ext + " files appear in sync — usually machine-local",
 			Paths:   paths,
 		})
 	}

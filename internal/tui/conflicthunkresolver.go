@@ -163,21 +163,29 @@ func (m *conflictHunkResolverModel) View() string {
 
 	total := m.totalHunks()
 	done := total - m.pendingCount()
-	fmt.Fprintf(&sb, "  %s  %s\n\n",
-		theme.Secondary.Render("file:"), m.path)
-	fmt.Fprintf(&sb, "  %s  %s\n\n",
-		theme.Secondary.Render("hunks:"),
-		theme.Hint.Render(fmt.Sprintf("%d of %d resolved", done, total)))
+
+	// Progress chip — matches the file-level conflict resolver's
+	// `● 3/7 resolved` pattern. Flips to green when fully resolved.
+	chipStyle := theme.ChipNeutral
+	if done == total {
+		chipStyle = theme.ChipGood
+	}
+	fmt.Fprintf(&sb, "%s  %s\n\n",
+		chipStyle.Render(fmt.Sprintf("● %d / %d hunks", done, total)),
+		theme.Hint.Render("· "+m.path))
 
 	if m.allResolved() {
-		sb.WriteString(theme.Good.Render("all hunks resolved ✓") + "\n\n")
-		sb.WriteString(theme.Primary.Render("a ") + "apply merged file • " +
-			theme.Hint.Render("esc back"))
+		body := theme.Good.Bold(true).Render("✓ ALL HUNKS RESOLVED") + "\n" +
+			theme.Subtle.Render("press a to apply the merged file")
+		sb.WriteString(theme.CardClean.Width(56).Render(body) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "a", label: "apply merged file", primary: true},
+			{cap: "esc", label: "back"},
+		}))
 		return sb.String()
 	}
 
 	if m.cursor >= len(m.segments) {
-		// Shouldn't happen — we'd be allResolved — but render defensively.
 		sb.WriteString(theme.Hint.Render("no more hunks"))
 		return sb.String()
 	}
@@ -188,18 +196,22 @@ func (m *conflictHunkResolverModel) View() string {
 		return sb.String()
 	}
 
-	sb.WriteString(theme.Heading.Render(
+	sb.WriteString(theme.Secondary.Bold(true).Render(
 		fmt.Sprintf("hunk %d of %d", m.hunkIndexOf(m.cursor), total)) + "\n\n")
 
-	sb.WriteString(theme.Secondary.Render("local") + "\n")
+	// Side labels as chips (matches conflict-key-resolver):
+	// [ L ] and [ R ] pills tag the two sides so the user parses
+	// "pick one of these" rather than "these are both part of the file".
+	sb.WriteString(theme.ChipGood.Render(" L ") + "  " + theme.Secondary.Render("local") + "\n")
 	sb.WriteString(renderHunkSide(hunk.Local, theme.Bad) + "\n")
-	sb.WriteString(theme.Secondary.Render("remote") + "\n")
+	sb.WriteString(theme.ChipNeutral.Render(" R ") + "  " + theme.Secondary.Render("remote") + "\n")
 	sb.WriteString(renderHunkSide(hunk.Remote, theme.Good) + "\n")
 
-	sb.WriteString("\n" +
-		theme.Primary.Render("l ") + "take local • " +
-		theme.Primary.Render("r ") + "take remote • " +
-		theme.Hint.Render("esc back"))
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "l", label: "take local", primary: true},
+		{cap: "r", label: "take remote"},
+		{cap: "esc", label: "back"},
+	}))
 	return sb.String()
 }
 

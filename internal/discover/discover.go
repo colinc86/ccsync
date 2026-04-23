@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/colinc86/ccsync/internal/ignore"
 )
@@ -59,6 +60,14 @@ func Walk(in Inputs, m *ignore.Matcher) (*Result, error) {
 }
 
 func walkClaudeDir(root string, m *ignore.Matcher, res *Result) error {
+	// Resolve the root once so symlink-escape checks can compare
+	// against a canonical base. If the user's ~/.claude is itself
+	// a symlink (uncommon but valid), we want "inside the tree" to
+	// mean "inside the real target," not "inside the symlink path."
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		resolvedRoot = root
+	}
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -82,6 +91,24 @@ func walkClaudeDir(root string, m *ignore.Matcher, res *Result) error {
 			return nil
 		}
 
+		// Symlink-escape guard: if the entry is a symlink whose target
+		// resolves outside ~/.claude, silently drop it. sync.Run reads
+		// via os.ReadFile which FOLLOWS links, so without this filter a
+		// stray symlink could leak /etc/* or another user's home into
+		// the sync repo. Broken links (EvalSymlinks errors) are dropped
+		// the same way; sync would fail on read anyway, and surfacing a
+		// broken link as tracked would just produce a confusing sync
+		// error the user can't action.
+		if d.Type()&fs.ModeSymlink != 0 {
+			target, lerr := filepath.EvalSymlinks(path)
+			if lerr != nil {
+				return nil
+			}
+			if !isUnder(target, resolvedRoot) {
+				return nil
+			}
+		}
+
 		info, ierr := d.Info()
 		if ierr != nil {
 			return ierr
@@ -99,4 +126,15 @@ func walkClaudeDir(root string, m *ignore.Matcher, res *Result) error {
 		res.Tracked = append(res.Tracked, e)
 		return nil
 	})
+}
+
+// isUnder reports whether target (already symlink-resolved) lives
+// inside base (also resolved). Equality counts as "under" so the root
+// itself isn't rejected if something happens to point straight at it.
+func isUnder(target, base string) bool {
+	if target == base {
+		return true
+	}
+	sep := string(filepath.Separator)
+	return strings.HasPrefix(target, base+sep)
 }

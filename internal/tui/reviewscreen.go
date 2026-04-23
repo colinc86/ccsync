@@ -75,9 +75,44 @@ func newReviewScreen(ctx *AppContext, actions []sync.FileAction, profilePrefix s
 			RepoRelPath: rel,
 		})
 	}
+	// Sort items into canonical category order so the flat cursor
+	// position matches what the user sees. Pre-v0.6.15 the items
+	// slice preserved insertion order while View grouped by
+	// category — cursor=1 pointed at the 2nd-visible row
+	// (post-grouping) but m.items[1] held the 2nd-inserted action,
+	// which was often a different file. Users silently toggled the
+	// wrong deny flag. Stable within a category (secondary key =
+	// Path).
+	sortItemsForDisplay(items)
 	m := &reviewScreenModel{ctx: ctx, items: items}
 	m.rebuildGroups()
 	return m
+}
+
+// sortItemsForDisplay orders items so that the flat index matches the
+// grouped render order. Category rank follows category.All();
+// unrecognized categories go to the tail, tie-broken lexically.
+func sortItemsForDisplay(items []reviewItem) {
+	rank := map[string]int{}
+	for i, c := range category.All() {
+		rank[c] = i
+	}
+	catRank := func(c string) int {
+		if r, ok := rank[c]; ok {
+			return r
+		}
+		return len(rank)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		ri, rj := catRank(items[i].Category), catRank(items[j].Category)
+		if ri != rj {
+			return ri < rj
+		}
+		if items[i].Category != items[j].Category {
+			return items[i].Category < items[j].Category
+		}
+		return items[i].Path < items[j].Path
+	})
 }
 
 func (m *reviewScreenModel) rebuildGroups() {
@@ -226,12 +261,15 @@ func (m *reviewScreenModel) commit() tea.Cmd {
 
 func (m *reviewScreenModel) View() string {
 	if m.applying {
-		return theme.Hint.Render("saving your choices and syncing…")
+		card := theme.CardPending.Width(56).Render(
+			theme.Warn.Bold(true).Render("◌ APPLYING") + "\n" +
+				theme.Hint.Render("saving your choices and running the sync…"))
+		return card
 	}
 
 	var sb strings.Builder
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	}
 
 	allowed, denied, promoted := 0, 0, 0
@@ -245,14 +283,16 @@ func (m *reviewScreenModel) View() string {
 			promoted++
 		}
 	}
-	parts := []string{
-		theme.Good.Render(fmt.Sprintf("allow %d", allowed)),
-		theme.Warn.Render(fmt.Sprintf("deny %d", denied)),
+	// Chip row for the review tallies — coloured semantically so the
+	// eye reads allow/deny/promote at a glance.
+	chips := []string{
+		theme.ChipGood.Render(fmt.Sprintf("✓ %d allow", allowed)),
+		theme.ChipWarn.Render(fmt.Sprintf("✗ %d deny", denied)),
 	}
 	if promoted > 0 {
-		parts = append(parts, theme.Primary.Render(fmt.Sprintf("promote %d", promoted)))
+		chips = append(chips, theme.ChipNeutral.Render(fmt.Sprintf("↗ %d promote", promoted)))
 	}
-	sb.WriteString(strings.Join(parts, "  ") + "\n\n")
+	sb.WriteString(strings.Join(chips, theme.Rule.Render("  ·  ")) + "\n\n")
 
 	cursorIdx := m.cursor
 	seen := 0
@@ -268,18 +308,14 @@ func (m *reviewScreenModel) View() string {
 			if !it.Allowed {
 				mark = theme.Warn.Render("[✗]")
 			}
-			dir := "↑"
+			dir := theme.Subtle.Render("↑")
 			if !it.DirectionUp {
-				dir = "↓"
+				dir = theme.Subtle.Render("↓")
 			}
 			cursor := "  "
 			if seen == cursorIdx {
 				cursor = theme.Primary.Render("▸ ")
 			}
-			// Destination label: for push items, show where the file
-			// will land — active profile by default, "default
-			// (shared)" when promoted. Pull items don't get a dest
-			// column (the incoming file just lands locally).
 			var dest string
 			switch {
 			case !it.DirectionUp:
@@ -295,6 +331,13 @@ func (m *reviewScreenModel) View() string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString(theme.Hint.Render("↑↓ move · space/x toggle allow · p promote to default · a allow all · d deny all · enter apply"))
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "enter", label: "apply", primary: true},
+		{cap: "space", label: "toggle"},
+		{cap: "p", label: "promote to default"},
+		{cap: "a", label: "allow all"},
+		{cap: "d", label: "deny all"},
+		{cap: "↑↓", label: "move"},
+	}))
 	return sb.String()
 }

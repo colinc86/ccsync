@@ -9,7 +9,7 @@ import (
 // identical — they pass through unchanged. Hunks are spans where local
 // and remote diverge and the user (or a picker) must choose a side.
 type TextSegment struct {
-	Agreed string  // non-empty when both sides match this span
+	Agreed string    // non-empty when both sides match this span
 	Hunk   *TextHunk // non-nil when local and remote disagree
 }
 

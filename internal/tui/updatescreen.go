@@ -33,9 +33,9 @@ type updateStep int
 
 const (
 	updateStepChecking updateStep = iota
-	updateStepOffer              // latest > current
+	updateStepOffer               // latest > current
 	updateStepUpToDate
-	updateStepHomebrew           // installed via brew — defer to brew upgrade
+	updateStepHomebrew // installed via brew — defer to brew upgrade
 	updateStepInstalling
 	updateStepDone
 )
@@ -148,17 +148,24 @@ func (m *updateScreenModel) View() string {
 	var sb strings.Builder
 
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	} else if m.message != "" {
-		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
+		sb.WriteString(theme.Good.Render("✓ "+m.message) + "\n\n")
 	}
 
-	fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("installed:"), m.current)
+	// Version strip — compact aligned rows showing installed, latest,
+	// and the binary we'd overwrite. Muted dots prefix each row so
+	// the block reads as a metadata panel, matching Home's detail
+	// strip.
+	fmt.Fprintf(&sb, " %s %-10s %s\n",
+		theme.Rule.Render("·"), theme.Hint.Render("installed"), theme.Secondary.Render(m.current))
 	if m.latest != "" {
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("latest:   "), m.latest)
+		fmt.Fprintf(&sb, " %s %-10s %s\n",
+			theme.Rule.Render("·"), theme.Hint.Render("latest"), theme.Secondary.Render(m.latest))
 	}
 	if m.exePath != "" {
-		fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render("binary:   "), theme.Hint.Render(m.exePath))
+		fmt.Fprintf(&sb, " %s %-10s %s\n",
+			theme.Rule.Render("·"), theme.Hint.Render("binary"), theme.Hint.Render(m.exePath))
 	}
 	sb.WriteString("\n")
 
@@ -166,20 +173,35 @@ func (m *updateScreenModel) View() string {
 	case updateStepChecking:
 		sb.WriteString(m.spin.View() + " " + theme.Hint.Render("checking github for latest release…"))
 	case updateStepUpToDate:
-		sb.WriteString(theme.Good.Render("✓ up to date"))
-		sb.WriteString("\n\n" + theme.Hint.Render("press any key to return"))
+		body := theme.Good.Bold(true).Render("✓ UP TO DATE") + "\n" +
+			theme.Hint.Render("you're on the newest release")
+		sb.WriteString(theme.CardClean.Width(56).Render(body) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "any key", label: "return", primary: true},
+		}))
 	case updateStepHomebrew:
-		sb.WriteString(theme.Warn.Render("installed via Homebrew — run: brew upgrade ccsync"))
-		sb.WriteString("\n\n" + theme.Hint.Render("press any key to return"))
+		body := theme.Warn.Bold(true).Render("↗ HOMEBREW INSTALL") + "\n" +
+			theme.Hint.Render("this binary was installed via Homebrew.\nrun: brew upgrade ccsync")
+		sb.WriteString(theme.CardPending.Width(56).Render(body) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "any key", label: "return", primary: true},
+		}))
 	case updateStepOffer:
-		fmt.Fprintf(&sb, theme.Warn.Render("update available: %s → %s")+"\n\n", m.current, m.latest)
-		sb.WriteString(
-			theme.Primary.Render("y/enter ") + "install now • " +
-				theme.Hint.Render("n / esc cancel"))
+		body := theme.Warn.Bold(true).Render(fmt.Sprintf("↗ UPDATE AVAILABLE  %s → %s", m.current, m.latest)) + "\n" +
+			theme.Hint.Render("downloads from GitHub, atomic-replaces this binary")
+		sb.WriteString(theme.CardPending.Width(60).Render(body) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "y", label: "install now", primary: true},
+			{cap: "enter", label: "install"},
+			{cap: "n", label: "cancel"},
+			{cap: "esc", label: "cancel"},
+		}))
 	case updateStepInstalling:
 		sb.WriteString(m.spin.View() + " " + theme.Hint.Render("downloading and replacing binary…"))
 	case updateStepDone:
-		sb.WriteString(theme.Hint.Render("press any key to return"))
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "any key", label: "return", primary: true},
+		}))
 	}
 	return sb.String()
 }

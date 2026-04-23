@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/colinc86/ccsync/internal/config"
@@ -27,7 +29,13 @@ func Create(cfg *config.Config, cfgPath, name, description string) error {
 	return cfg.SaveWithBackup(cfgPath)
 }
 
-// Delete removes a profile from cfg. Rejects deleting the active or last profile.
+// Delete removes a profile from cfg. Rejects deleting the active
+// profile, the last profile, or a profile that has descendants
+// (anyone else's `extends` points at it). Pre-v0.6.9 the descendants
+// check was missing — deleting "default" when "work" extended it
+// silently orphaned work, and the next sync failed with "extends
+// unknown profile 'default'" without any hint about which profile
+// configuration needed fixing.
 func Delete(cfg *config.Config, cfgPath, name string, activeProfile string) error {
 	if name == activeProfile {
 		return errors.New("cannot delete the active profile; switch first")
@@ -38,8 +46,37 @@ func Delete(cfg *config.Config, cfgPath, name string, activeProfile string) erro
 	if len(cfg.Profiles) <= 1 {
 		return errors.New("cannot delete the last profile")
 	}
+	var descendants []string
+	for other, spec := range cfg.Profiles {
+		if other != name && spec.Extends == name {
+			descendants = append(descendants, other)
+		}
+	}
+	if len(descendants) > 0 {
+		sort.Strings(descendants)
+		return fmt.Errorf("cannot delete %q: profile %s extends it; delete or reparent %s first",
+			name, quoteJoin(descendants), pluralizeProfile(len(descendants)))
+	}
 	delete(cfg.Profiles, name)
 	return cfg.SaveWithBackup(cfgPath)
+}
+
+// quoteJoin formats a list of profile names as a comma-separated
+// quoted string for error messages: ["work"] → `"work"`, ["work",
+// "personal"] → `"work", "personal"`.
+func quoteJoin(names []string) string {
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = fmt.Sprintf("%q", n)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func pluralizeProfile(n int) string {
+	if n == 1 {
+		return "that profile"
+	}
+	return "those profiles"
 }
 
 // Switch changes state.ActiveProfile to target. Before switching, it takes a

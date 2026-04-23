@@ -16,6 +16,7 @@ var helpOverlayContent = []helpSection{
 	{
 		Title: "navigation",
 		Rows: []helpRow{
+			{"ctrl+k", "command palette — quick jump to any action"},
 			{"↑↓ / j k", "move cursor"},
 			{"enter", "select / confirm"},
 			{"esc", "back (or quit on Home)"},
@@ -47,10 +48,10 @@ var helpOverlayContent = []helpSection{
 		Rows: []helpRow{
 			{"1 / 2 / 3", "bulk: take remote / take local / manual"},
 			{"l / r", "(manual) take local / remote for cursored"},
-			{"enter", "(manual) per-key picker (JSON)"},
-			{"h", "(manual) per-hunk picker (text)"},
+			{"enter", "(manual) drill in — per-key (JSON) or per-hunk (text)"},
+			{"h", "(manual) per-hunk picker (text) — alternate to enter"},
 			{"d", "diff local vs remote"},
-			{"a", "apply all resolutions"},
+			{"a", "apply all resolutions (once everything resolved)"},
 		},
 	},
 	{
@@ -103,22 +104,37 @@ type helpRow struct {
 }
 
 // renderHelpOverlay builds the help panel as a bordered lipgloss block.
+// The key column renders as inverse-video pills (theme.Keycap) so the
+// cheat sheet reads as a keyboard, not a printed manual. Section
+// titles get a subtle separator rule on the same line so the eye
+// finds "navigation", "home", "sync preview", etc. without
+// over-crowding the layout.
 func renderHelpOverlay() string {
 	var sb strings.Builder
-	sb.WriteString(theme.Heading.Render("ccsync keybindings") + "\n\n")
+	sb.WriteString(theme.WordmarkStyle.Render("ccsync") + "  " +
+		theme.Subtle.Render("keybindings") + "\n")
+	sb.WriteString(theme.Rule.Render(strings.Repeat("─", 48)) + "\n\n")
 
+	// Two-column flow by padding each key-pill to a consistent width
+	// so descriptions align vertically. Use lipgloss.Width to measure
+	// the RENDERED width (pills have ANSI escape codes that plain
+	// strings.Repeat can't see around).
+	const keyColWidth = 16
 	for i, section := range helpOverlayContent {
-		sb.WriteString(theme.Secondary.Render(section.Title) + "\n")
+		sb.WriteString(theme.Secondary.Bold(true).Render(section.Title) + "\n")
 		for _, row := range section.Rows {
-			// Pad the key column to 14 characters for alignment.
-			keyStr := theme.Primary.Render(padRight(row.Key, 14))
-			sb.WriteString("  " + keyStr + "  " + theme.Hint.Render(row.Desc) + "\n")
+			pill := theme.KeycapMuted.Render(row.Key)
+			pad := keyColWidth - lipgloss.Width(pill)
+			if pad < 1 {
+				pad = 1
+			}
+			sb.WriteString("  " + pill + strings.Repeat(" ", pad) + theme.Hint.Render(row.Desc) + "\n")
 		}
 		if i < len(helpOverlayContent)-1 {
 			sb.WriteString("\n")
 		}
 	}
-	sb.WriteString("\n" + theme.Hint.Render("? again — or any key — to dismiss"))
+	sb.WriteString("\n" + theme.Hint.Render("any key to dismiss"))
 
 	panel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -126,13 +142,4 @@ func renderHelpOverlay() string {
 		Padding(1, 2).
 		Render(sb.String())
 	return panel
-}
-
-// padRight pads s with spaces on the right to reach width n. Used for
-// key-column alignment in the overlay.
-func padRight(s string, n int) string {
-	if len(s) >= n {
-		return s
-	}
-	return s + strings.Repeat(" ", n-len(s))
 }

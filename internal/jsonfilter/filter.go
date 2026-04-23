@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -39,7 +38,7 @@ func Apply(data []byte, rule config.JSONFileRule, profile string) (FilterResult,
 			return FilterResult{}, fmt.Errorf("bad exclude %q: %w", pat, err)
 		}
 		paths := m.Match(parsed)
-		sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+		sortPathsReverse(paths)
 		for _, p := range paths {
 			var derr error
 			out, derr = sjson.DeleteBytes(out, p)
@@ -77,23 +76,33 @@ func Apply(data []byte, rule config.JSONFileRule, profile string) (FilterResult,
 		}
 	}
 
-	// 3. Include: if set and not bare root, keep only the included subtrees
+	// 3. Include: if set and not bare root, keep only the included subtrees.
+	// Built via sjson starting from an empty object so numeric path segments
+	// materialize as array indices. Pre-fix this path used insertIntoMap
+	// which treated every segment as a map key, so an include like
+	// `$.mcpServers.*.args.*` turned arrays into objects-with-index-keys
+	// (`{args: {"0": "--model"}}`) and downstream tools broke on the
+	// wrong shape.
 	keepAll := len(rule.Include) == 0 || slices.Contains(rule.Include, "$")
 	if !keepAll {
-		filtered := map[string]interface{}{}
+		filtered := []byte("{}")
 		for _, pat := range rule.Include {
 			m, err := Compile(pat)
 			if err != nil {
 				return FilterResult{}, fmt.Errorf("bad include %q: %w", pat, err)
 			}
 			for _, p := range m.Match(parsed) {
-				insertIntoMap(filtered, p, extract(parsed, p))
+				raw, err := json.Marshal(extract(parsed, p))
+				if err != nil {
+					return FilterResult{}, err
+				}
+				filtered, err = sjson.SetRawBytes(filtered, p, raw)
+				if err != nil {
+					return FilterResult{}, fmt.Errorf("include set %q: %w", p, err)
+				}
 			}
 		}
-		out, err = json.Marshal(filtered)
-		if err != nil {
-			return FilterResult{}, err
-		}
+		out = filtered
 	}
 
 	pretty, err := prettyJSON(out)
@@ -254,21 +263,68 @@ func extract(doc interface{}, path string) interface{} {
 	return cur
 }
 
-func insertIntoMap(target map[string]interface{}, path string, val interface{}) {
-	parts := strings.Split(path, ".")
-	cur := target
-	for i, p := range parts {
-		if i == len(parts)-1 {
-			cur[p] = val
-			return
+// sortPathsReverse orders dot-paths for safe deletion: path segments
+// that are integer-looking compare numerically; everything else is
+// lexicographic. Reverse order ensures higher array indices delete
+// before lower ones so indices don't shift under us.
+//
+// Plain reverse-lexicographic order was a silent correctness bug for
+// 10+ element arrays: "arr.10" sorts lexicographically before "arr.2",
+// so "arr.2" was deleted first, then when "arr.10" came up the array
+// was only 9 long and sjson silently dropped the out-of-bounds delete.
+// Concrete impact: wildcard excludes on long arrays leaked the last
+// few elements past the filter — which for "permissions.allow" or
+// "mcpServers.*.env.*" means secrets end up in the repo.
+func sortPathsReverse(paths []string) {
+	slices.SortFunc(paths, func(a, b string) int {
+		return -comparePaths(a, b)
+	})
+}
+
+// comparePaths returns -1/0/+1 like strings.Compare but treats
+// all-digit segments as integers so "arr.2" < "arr.10".
+func comparePaths(a, b string) int {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		if cmp := compareSegment(as[i], bs[i]); cmp != 0 {
+			return cmp
 		}
-		next, ok := cur[p].(map[string]interface{})
-		if !ok {
-			next = map[string]interface{}{}
-			cur[p] = next
-		}
-		cur = next
 	}
+	switch {
+	case len(as) < len(bs):
+		return -1
+	case len(as) > len(bs):
+		return 1
+	}
+	return 0
+}
+
+func compareSegment(a, b string) int {
+	// Fast path: both all-digit, and at least one digit each.
+	ai, aOk := parseIntSeg(a)
+	bi, bOk := parseIntSeg(b)
+	if aOk && bOk {
+		switch {
+		case ai < bi:
+			return -1
+		case ai > bi:
+			return 1
+		}
+		return 0
+	}
+	return strings.Compare(a, b)
+}
+
+func parseIntSeg(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func prettyJSON(data []byte) ([]byte, error) {

@@ -5,9 +5,9 @@ import "testing"
 func TestDecide(t *testing.T) {
 	// Key: L=local, B=base, R=remote. Empty string = absent.
 	cases := []struct {
-		name               string
+		name                string
 		local, base, remote string
-		want               Action
+		want                Action
 	}{
 		// 8 absence combinations
 		{"all-absent", "", "", "", ActionNoOp},

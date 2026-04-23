@@ -74,3 +74,76 @@ func TestFileBackend(t *testing.T) {
 		t.Errorf("after Delete, Fetch err = %v", err)
 	}
 }
+
+// TestSanitizeKeyInjective pins the property that really matters:
+// distinct input keys produce distinct filenames. Rather than assert
+// specific encodings (which could change if we switch escape schemes),
+// we assert injectivity across a small but deliberately-adversarial
+// pool of keys that have historically collided under naive
+// replacement.
+func TestSanitizeKeyInjective(t *testing.T) {
+	keys := []string{
+		"a_b:x", // collided with "a:b_x" under old scheme
+		"a:b_x",
+		"profile:nested.path",
+		"profile_nested.path", // no colon
+		"profile:nested_path",
+		"with/slash:yes",
+		"with%25already-escaped",
+	}
+	seen := map[string]string{}
+	for _, k := range keys {
+		s := sanitizeKey(k)
+		if orig, dup := seen[s]; dup {
+			t.Errorf("collision: sanitizeKey(%q) == sanitizeKey(%q) == %q", orig, k, s)
+		}
+		seen[s] = k
+	}
+}
+
+// TestFileBackendDistinctKeysNoCollision pins the iteration-12 fix for
+// sanitizeKey: distinct logical keys must NOT collapse to the same
+// on-disk filename. Pre-fix the sanitizer replaced "/", ":", "\" all
+// with "_", so any user-chosen characters happening to be "_" in the
+// profile name or path created false collisions. Worked example that
+// failed: profile "a_b" + path "x" sanitized to "a_b_x"; profile "a"
+// + path "b_x" ALSO sanitized to "a_b_x" — one file backed two
+// logical secrets, so the second Store overwrote the first and any
+// later Fetch returned the wrong profile's token.
+//
+// With secrets being OAuth tokens and API keys, cross-profile mixing
+// is a real user-impact bug.
+func TestFileBackendDistinctKeysNoCollision(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("CCSYNC_SECRETS_BACKEND", "file")
+	// Reset any state from earlier tests.
+	SetBackend("")
+
+	// Two logically-different keys that sanitize to the same name
+	// under the old `_`-only scheme.
+	keyA := Key("a_b", "x") // "a_b:x"
+	keyB := Key("a", "b_x") // "a:b_x"
+
+	if err := Store(keyA, "value-A"); err != nil {
+		t.Fatalf("Store A: %v", err)
+	}
+	if err := Store(keyB, "value-B"); err != nil {
+		t.Fatalf("Store B: %v", err)
+	}
+
+	gotA, err := Fetch(keyA)
+	if err != nil {
+		t.Fatalf("Fetch A: %v", err)
+	}
+	gotB, err := Fetch(keyB)
+	if err != nil {
+		t.Fatalf("Fetch B: %v", err)
+	}
+	if gotA != "value-A" {
+		t.Errorf("Fetch(%q) = %q, want value-A — second Store silently clobbered the first", keyA, gotA)
+	}
+	if gotB != "value-B" {
+		t.Errorf("Fetch(%q) = %q, want value-B", keyB, gotB)
+	}
+}

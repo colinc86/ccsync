@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/colinc86/ccsync/internal/gitx"
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/jsonfilter"
 )
 
@@ -79,7 +80,7 @@ func ApplyResolutions(ctx context.Context, in Inputs, resolutions map[string][]b
 		return Result{MissingSecrets: missing}, nil
 	}
 
-	msg := fmt.Sprintf("resolve(%s): %s %d conflict(s)", in.Profile, in.HostName, len(resolutions))
+	msg := fmt.Sprintf("resolve(%s): %s %s", in.Profile, in.HostName, humanize.Count(len(resolutions), "conflict"))
 	commitSHA, err := repo.Commit(msg, in.HostName, in.AuthorEmail)
 	if err != nil {
 		return Result{}, err
@@ -88,12 +89,12 @@ func ApplyResolutions(ctx context.Context, in Inputs, resolutions map[string][]b
 		return Result{}, err
 	}
 
-	st, err := loadHostState(in.StateDir)
-	if err == nil {
-		if newHead, herr := repo.HeadSHA(); herr == nil && newHead != "" {
-			st.LastSyncedSHA[in.Profile] = newHead
-			_ = saveHostState(in.StateDir, st)
-		}
+	// Advance LastSyncedSHA to the new commit so the next sync's
+	// three-way merge uses a fresh base. Failures here are non-fatal
+	// (the push already landed; next sync self-heals via SyncToRemote)
+	// but must surface so the user isn't silently left with stale state.
+	if err := advanceStateToHead(in, repo, commitSHA, "resolve"); err != nil {
+		return Result{CommitSHA: commitSHA, MissingSecrets: missing}, err
 	}
 
 	return Result{CommitSHA: commitSHA, MissingSecrets: missing}, nil

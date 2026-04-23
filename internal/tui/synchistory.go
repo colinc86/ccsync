@@ -211,10 +211,10 @@ func (m *syncHistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *syncHistoryModel) View() string {
 	var sb strings.Builder
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	}
 	if m.message != "" {
-		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
+		sb.WriteString(theme.Good.Render("✓ "+m.message) + "\n\n")
 	}
 	if m.calendarView {
 		var logs []gitx.LogEntry
@@ -222,7 +222,10 @@ func (m *syncHistoryModel) View() string {
 			logs, _ = repo.Log(500) // enough to cover the 26-week window
 		}
 		sb.WriteString(renderActivityCalendar(logs))
-		sb.WriteString("\n\n" + theme.Hint.Render("v list view • esc back"))
+		sb.WriteString("\n\n" + renderFooterBar([]footerKey{
+			{cap: "v", label: "list view", primary: true},
+			{cap: "esc", label: "back"},
+		}))
 		return sb.String()
 	}
 	if m.filtering || m.filterIn.Value() != "" {
@@ -240,6 +243,29 @@ func (m *syncHistoryModel) View() string {
 		return sb.String()
 	}
 
+	// Summary chips — split commits vs snapshots so the user can
+	// see "there are 42 syncs and 18 snapshots to explore" before
+	// reading any individual row.
+	var commits, snaps int
+	for _, it := range m.items {
+		switch it.kind {
+		case historyCommit:
+			commits++
+		case historySnapshot:
+			snaps++
+		}
+	}
+	chips := []string{}
+	if commits > 0 {
+		chips = append(chips, theme.ChipNeutral.Render(fmt.Sprintf("● %d commits", commits)))
+	}
+	if snaps > 0 {
+		chips = append(chips, theme.ChipGood.Render(fmt.Sprintf("⎘ %d snapshots", snaps)))
+	}
+	if len(chips) > 0 {
+		sb.WriteString(strings.Join(chips, theme.Rule.Render("  ·  ")) + "\n\n")
+	}
+
 	start, end := windowAround(m.cursor, len(m.filtered), 18)
 	for i := start; i < end; i++ {
 		it := m.items[m.filtered[i]]
@@ -254,20 +280,31 @@ func (m *syncHistoryModel) View() string {
 			if len(short) > 7 {
 				short = short[:7]
 			}
+			// ● in secondary as a commit glyph — more scannable than
+			// the word "commit " padded out.
 			fmt.Fprintf(&sb, "%s%s %s %s  %s\n",
-				cursor, theme.Secondary.Render("commit  "),
+				cursor, theme.Secondary.Render("●"),
 				theme.Hint.Render(ts), theme.Primary.Render(short), it.subject)
 		case historySnapshot:
+			// ⎘ in good — snapshots are safety-net rollback anchors,
+			// the "something went right" element of history.
 			fmt.Fprintf(&sb, "%s%s %s %s  %s (%d files)\n",
-				cursor, theme.Good.Render("snapshot"),
+				cursor, theme.Good.Render("⎘"),
 				theme.Hint.Render(ts), theme.Primary.Render(it.snapID), it.snapOp, it.snapFiles)
 		}
 	}
-	sb.WriteString("\n" +
-		theme.Primary.Render("/ ") + "filter • " +
-		theme.Primary.Render("b ") + "rollback • " +
-		theme.Primary.Render("v ") + "calendar • " +
-		theme.Hint.Render("↑↓ move • c clear"))
+	if len(m.filtered) > 18 {
+		sb.WriteString(theme.Hint.Render(fmt.Sprintf(
+			"\n  %d–%d of %d · ↑↓ to scroll", start+1, end, len(m.filtered))))
+	}
+
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "b", label: "rollback", primary: true},
+		{cap: "/", label: "filter"},
+		{cap: "v", label: "calendar"},
+		{cap: "↑↓", label: "move"},
+		{cap: "c", label: "clear filter"},
+	}))
 	return sb.String()
 }
 

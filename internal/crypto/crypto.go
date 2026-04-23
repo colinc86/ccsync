@@ -97,8 +97,14 @@ func (m *Marker) DeriveKey(passphrase string) ([]byte, error) {
 	return scrypt.Key([]byte(passphrase), salt, 1<<15, 8, 1, KeyLen)
 }
 
-// Encrypt returns an encrypted ciphertext prefixed with a random nonce.
-// Empty inputs round-trip through unchanged (preserve empty files).
+// Encrypt returns an encrypted ciphertext prefixed with a magic header
+// and a random nonce. An empty plaintext is NOT passed through — it
+// encrypts to a minimum-size blob of magic + nonce + Poly1305 tag
+// (36 bytes). Decrypt reverses this and yields an empty slice. Callers
+// that care about "empty stays empty" (to reduce repo bloat for blank
+// files) must short-circuit themselves; we always emit a validated
+// envelope here so HasMagic can reliably distinguish ciphertext from
+// stray plaintext during migration.
 func Encrypt(key, plaintext []byte) ([]byte, error) {
 	if len(key) != KeyLen {
 		return nil, fmt.Errorf("key length %d != %d", len(key), KeyLen)

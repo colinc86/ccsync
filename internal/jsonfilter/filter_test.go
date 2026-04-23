@@ -235,3 +235,100 @@ func TestIncludeRoot(t *testing.T) {
 		t.Errorf("root include lost fields: %v", got)
 	}
 }
+
+func TestSortPathsReverseNumericAware(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want []string
+	}{
+		{
+			in:   []string{"arr.0", "arr.10", "arr.2", "arr.11", "arr.1"},
+			want: []string{"arr.11", "arr.10", "arr.2", "arr.1", "arr.0"},
+		},
+		{
+			// Non-array-index segments compare lexicographically; mixed
+			// numeric + alphabetic paths still sort sensibly in reverse.
+			in:   []string{"a.2", "b.1", "a.10", "b.0"},
+			want: []string{"b.1", "b.0", "a.10", "a.2"},
+		},
+		{
+			// Single-segment, all-digit edge case.
+			in:   []string{"3", "1", "10", "2"},
+			want: []string{"10", "3", "2", "1"},
+		},
+	}
+	for i, c := range cases {
+		got := append([]string(nil), c.in...)
+		sortPathsReverse(got)
+		if strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("case %d: sortPathsReverse(%v) = %v, want %v", i, c.in, got, c.want)
+		}
+	}
+}
+
+// TestExcludeArrayWildcardDoubleDigit pins the sort-order fix for
+// Apply's Exclude loop. Pre-v0.6.7 the paths returned from Match were
+// sorted with plain reverse-lexicographic order, so for a 12-element
+// array the deletion order was "...9, ...8, ...7, ...6, ...5, ...4,
+// ...3, ...2, ...11, ...10, ...1, ...0". After "...9" is deleted the
+// array shrinks; "...11" and "...10" are now out of bounds and
+// sjson.DeleteBytes silently drops the operation. Result: the last
+// two elements of the array leak through the exclude filter — a
+// silent data-loss / secret-leak class of bug.
+//
+// Fix: sort paths with numeric-aware comparator (segments that look
+// like integers compare as integers). This test's 12 elements are
+// the minimum count that exposes the bug.
+// TestIncludeArrayWildcardPreservesArrayShape pins iter-41: an include
+// rule with a wildcard matching array elements must produce a valid
+// JSON array on output, not an object with stringified-index keys.
+// Pre-fix, insertIntoMap walked the dot-path as purely map semantics,
+// so "args.0" became `{"args": {"0": "val"}}` instead of
+// `{"args": ["val"]}`. Any tool reading the output (Claude Code,
+// diff tools, the user's editor) would see corrupted shapes — worst
+// case: mcp server args become invalid, tooling fails to start on
+// the other machine.
+func TestIncludeArrayWildcardPreservesArrayShape(t *testing.T) {
+	data := []byte(`{"mcpServers":{"gemini":{"args":["--model","gemini-pro","--verbose"]}}}`)
+	rule := config.JSONFileRule{
+		Include: []string{"$.mcpServers.*.args.*"},
+	}
+	res, err := Apply(data, rule, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(res.Data, &parsed); err != nil {
+		t.Fatalf("parse result: %v\n%s", err, res.Data)
+	}
+	mcp, _ := parsed["mcpServers"].(map[string]any)
+	gem, _ := mcp["gemini"].(map[string]any)
+	args, isArray := gem["args"].([]any)
+	if !isArray {
+		t.Fatalf("args should be a JSON array after include; got %T — full output:\n%s", gem["args"], res.Data)
+	}
+	if len(args) != 3 {
+		t.Errorf("args length = %d, want 3; got %v", len(args), args)
+	}
+}
+
+func TestExcludeArrayWildcardDoubleDigit(t *testing.T) {
+	in := `{"permissions":{"allow":["a","b","c","d","e","f","g","h","i","j","k","l"]}}`
+	rule := config.JSONFileRule{
+		Include: []string{"$"},
+		Exclude: []string{"$.permissions.allow.*"},
+	}
+	res, err := Apply([]byte(in), rule, "default")
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.Data, &got); err != nil {
+		t.Fatal(err)
+	}
+	perms, _ := got["permissions"].(map[string]any)
+	allow, _ := perms["allow"].([]any)
+	if len(allow) != 0 {
+		t.Errorf("wildcard exclude should have emptied allow list; got %d elements left: %v — these elements would leak to the repo as a secret", len(allow), allow)
+	}
+}

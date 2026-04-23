@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/snapshot"
 	"github.com/colinc86/ccsync/internal/theme"
 )
@@ -225,53 +227,230 @@ func (m homeModel) renderDashboard() string {
 
 	var sb strings.Builder
 
+	// Wordmark header — same identity element across home / onboarding
+	// so the TUI always tells the user "yes, this is ccsync".
+	sb.WriteString(theme.Wordmark("Claude Code settings sync") + "\n\n")
+
 	if !bootstrapped {
-		sb.WriteString(theme.Warn.Render("no sync repo configured") + "\n\n")
-		sb.WriteString(theme.Hint.Render("Point ccsync at a git repo you control.\n"))
-		sb.WriteString(theme.Hint.Render("Your Claude Code settings will sync to every machine you bootstrap.") + "\n\n")
-		sb.WriteString(theme.Primary.Render("[enter]") + " start setup\n")
-		sb.WriteString(theme.Hint.Render("[?] help   [q] quit"))
+		sb.WriteString(renderHeroCard(heroSpec{
+			glyph:   "◦",
+			title:   "NOT CONFIGURED",
+			subtext: "point ccsync at a git repo you control — your Claude Code settings\nwill sync to every machine you bootstrap",
+			state:   heroNeutral,
+		}) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "enter", label: "start setup", primary: true},
+			{cap: "?", label: "help"},
+			{cap: "q", label: "quit"},
+		}))
 		return sb.String()
 	}
 
-	// Status line — the primary visible element of the dashboard. We
-	// intentionally render the non-compact badge here (the header carries
-	// the compact variant on every screen); the dashboard is where the
-	// user looks for the full readout.
-	badge := SummaryBadge(m.ctx.Summary(), false)
-	if badge == "" {
-		badge = theme.Hint.Render("status unknown")
-	}
-	sb.WriteString(badge + "\n")
+	// Hero status card — the first thing the user parses on every
+	// launch, so it carries the most weight. State-reactive border
+	// (green/orange/red/muted) lets the eye confirm sync health
+	// before reading a single word.
+	s := m.ctx.Summary()
+	sb.WriteString(renderHeroCard(heroFromSummary(s, m.ctx, profile)) + "\n\n")
 
-	// Sub-status: last synced + snapshot count.
-	var subBits []string
-	if last := m.ctx.State.LastSyncedSHA[profile]; last != "" {
-		short := last
-		if len(short) > 7 {
-			short = short[:7]
+	// Specific-file preview of what the next sync will do. Only render
+	// when we have a fresh plan and non-trivial actions — the hero card
+	// already shows counts; this line names files so users can decide
+	// whether to sync without drilling into the preview screen.
+	if !m.ctx.Fetching && m.ctx.Plan != nil && !s.Clean() {
+		if preview := renderSyncPreview(*m.ctx.Plan); preview != "" {
+			sb.WriteString(theme.Hint.Render("next: "+preview) + "\n\n")
 		}
-		subBits = append(subBits, "last synced "+short)
-	} else {
-		subBits = append(subBits, "never synced")
 	}
-	if n := countSnapshots(m.ctx); n > 0 {
-		subBits = append(subBits, fmt.Sprintf("%d snapshot(s)", n))
-	}
-	sb.WriteString(theme.Hint.Render(strings.Join(subBits, " · ")) + "\n\n")
 
-	// Detail — still shown on home so users have the context at a glance,
-	// but visually demoted. The old home made these the primary content.
-	fmt.Fprintf(&sb, "%s  %s\n", theme.Hint.Render("host   "), theme.Secondary.Render(m.ctx.HostName))
-	fmt.Fprintf(&sb, "%s  %s\n", theme.Hint.Render("profile"), theme.Secondary.Render(profile))
-	fmt.Fprintf(&sb, "%s  %s\n", theme.Hint.Render("repo   "), theme.Secondary.Render(m.ctx.State.SyncRepoURL))
+	// Detail strip — one line per field, bullet-prefixed, aligned so
+	// the values are eye-scannable. Shorter than the old three-line
+	// layout and reads as a "metadata panel" rather than a data dump.
+	fmt.Fprintf(&sb, " %s %-7s %s\n",
+		theme.Rule.Render("·"), theme.Hint.Render("host"), theme.Secondary.Render(m.ctx.HostName))
+	fmt.Fprintf(&sb, " %s %-7s %s\n",
+		theme.Rule.Render("·"), theme.Hint.Render("profile"), theme.Secondary.Render("◉ "+profile))
+	fmt.Fprintf(&sb, " %s %-7s %s\n",
+		theme.Rule.Render("·"), theme.Hint.Render("repo"), theme.Secondary.Render(m.ctx.State.SyncRepoURL))
 	sb.WriteString("\n")
 
-	// Actions.
-	fmt.Fprintf(&sb, "%s %s\n", theme.Primary.Render("[enter]"), m.primaryLabel())
-	fmt.Fprintf(&sb, "%s    %s\n", theme.Primary.Render("[m]"), "more")
-	sb.WriteString(theme.Hint.Render("[r] re-check   [?] help   [q] quit"))
+	// Footer bar — keycap-styled shortcuts. Primary action first, pill-
+	// highlighted; secondary actions as muted chips. Replaces the old
+	// "[enter] sync now / [m] more" wall of brackets.
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "enter", label: m.primaryLabel(), primary: true},
+		{cap: "m", label: "more"},
+		{cap: "r", label: "re-check"},
+		{cap: "?", label: "help"},
+		{cap: "q", label: "quit"},
+	}))
 	return sb.String()
+}
+
+// heroState drives the hero-card border colour and the glyph/title
+// wording. Keeps renderHeroCard a pure function of (state, copy).
+type heroState int
+
+const (
+	heroClean heroState = iota
+	heroPending
+	heroConflict
+	heroFetching
+	heroNeutral
+)
+
+type heroSpec struct {
+	glyph   string // leading rune — ✓ / ↑ / ! / ◦ / spinner frame
+	title   string // short caps headline — IN SYNC / 3 PENDING / CONFLICT
+	subtext string // one or two muted lines below the title
+	state   heroState
+}
+
+// heroFromSummary translates a SyncSummary into the renderable hero
+// spec — glyph, title, sub-lines, state colour. Keeps all the "what
+// does this mean visually" decisions in one place so future state
+// additions (e.g. "migrating encryption") drop in cleanly.
+func heroFromSummary(s SyncSummary, ctx *AppContext, profile string) heroSpec {
+	switch {
+	case s.Fetching:
+		return heroSpec{
+			glyph: "◌", title: "CHECKING", state: heroFetching,
+			subtext: "reading the remote and comparing with your machine…",
+		}
+	case s.FetchErr != nil:
+		return heroSpec{
+			glyph: "!", title: "FETCH FAILED", state: heroConflict,
+			subtext: s.FetchErr.Error(),
+		}
+	case s.Unknown:
+		return heroSpec{
+			glyph: "◦", title: "STATUS UNKNOWN", state: heroNeutral,
+			subtext: "press r to check the remote, or enter to open the sync preview",
+		}
+	case s.Conflicts > 0:
+		return heroSpec{
+			glyph: "!", title: fmt.Sprintf("%d CONFLICT", s.Conflicts),
+			state: heroConflict,
+			subtext: heroFreshnessLine(ctx, profile),
+		}
+	case s.Clean():
+		return heroSpec{
+			glyph: "✓", title: "IN SYNC", state: heroClean,
+			subtext: heroFreshnessLine(ctx, profile),
+		}
+	}
+	// Pending push/pull counts.
+	parts := []string{}
+	if s.Outbound > 0 {
+		parts = append(parts, fmt.Sprintf("↑ %d push", s.Outbound))
+	}
+	if s.Inbound > 0 {
+		parts = append(parts, fmt.Sprintf("↓ %d pull", s.Inbound))
+	}
+	title := strings.Join(parts, "  ·  ")
+	return heroSpec{
+		glyph: "↻", title: strings.ToUpper(title), state: heroPending,
+		subtext: heroFreshnessLine(ctx, profile),
+	}
+}
+
+// heroFreshnessLine builds the "last synced X · N snapshots" sub-
+// line. Prefer state.LastSyncedAt; fall back to the snapshot-activity
+// proxy for pre-v0.6.5 bootstraps. Empty for never-synced profiles.
+func heroFreshnessLine(ctx *AppContext, profile string) string {
+	last := ctx.State.LastSyncedSHA[profile]
+	var bits []string
+	if last == "" {
+		bits = append(bits, "never synced")
+	} else {
+		ts := ctx.State.LastSyncedAt[profile]
+		if ts.IsZero() {
+			if proxy, ok := lastSyncActivityTime(ctx, profile); ok {
+				ts = proxy
+			}
+		}
+		if ago := humanize.Ago(ts); ago != "" {
+			bits = append(bits, "last synced "+ago)
+		} else {
+			short := last
+			if len(short) > 7 {
+				short = short[:7]
+			}
+			bits = append(bits, "last synced "+short)
+		}
+	}
+	if n := countSnapshots(ctx); n > 0 {
+		bits = append(bits, humanize.Count(n, "snapshot"))
+	}
+	return strings.Join(bits, "  ·  ")
+}
+
+// renderHeroCard draws the centerpiece status panel — big glyph and
+// caps headline, muted sub-copy, state-colored rounded border. The
+// card's minimum width keeps the sub-text line readable without
+// wrapping at common terminal widths; lipgloss rounds up if the
+// content demands more.
+func renderHeroCard(h heroSpec) string {
+	var glyphStyle lipgloss.Style
+	var titleStyle lipgloss.Style
+	var card lipgloss.Style
+	switch h.state {
+	case heroClean:
+		glyphStyle = theme.Good.Bold(true)
+		titleStyle = theme.Good.Bold(true)
+		card = theme.CardClean
+	case heroPending:
+		glyphStyle = theme.Warn.Bold(true)
+		titleStyle = theme.Warn.Bold(true)
+		card = theme.CardPending
+	case heroConflict:
+		glyphStyle = theme.Bad
+		titleStyle = theme.Bad
+		card = theme.CardConflict
+	case heroFetching:
+		glyphStyle = theme.Subtle.Bold(true)
+		titleStyle = theme.Subtle.Bold(true)
+		card = theme.CardNeutral
+	default:
+		glyphStyle = theme.Subtle.Bold(true)
+		titleStyle = theme.Subtle.Bold(true)
+		card = theme.CardNeutral
+	}
+	line1 := glyphStyle.Render(h.glyph) + "  " + titleStyle.Render(h.title)
+	var sb strings.Builder
+	sb.WriteString(line1)
+	if h.subtext != "" {
+		sb.WriteString("\n")
+		sb.WriteString(theme.Hint.Render(h.subtext))
+	}
+	return card.Width(56).Render(sb.String())
+}
+
+// footerKey describes one key in the persistent shortcut bar. primary
+// keys get the filled accent keycap (Keycap); others get the muted
+// variant (KeycapMuted).
+type footerKey struct {
+	cap     string
+	label   string
+	primary bool
+}
+
+// renderFooterBar renders the bottom-of-screen shortcut row. Keycaps
+// pill-style, labels in muted text. Keys join with a thin dot
+// separator so the row reads as one continuous legend, not a
+// cluttered list.
+func renderFooterBar(keys []footerKey) string {
+	var parts []string
+	for _, k := range keys {
+		var cap string
+		if k.primary {
+			cap = theme.Keycap.Render(k.cap)
+		} else {
+			cap = theme.KeycapMuted.Render(k.cap)
+		}
+		parts = append(parts, cap+" "+theme.Hint.Render(k.label))
+	}
+	return strings.Join(parts, theme.Rule.Render("  ·  "))
 }
 
 func (m homeModel) renderMore() string {
@@ -307,4 +486,28 @@ func countSnapshots(ctx *AppContext) int {
 		return 0
 	}
 	return len(snaps)
+}
+
+// lastSyncActivityTime returns the most recent snapshot's CreatedAt for
+// the given profile, or (zero, false) when no snapshot matches.
+//
+// Snapshots are taken pre-sync-write when pendingLocalWrites is
+// non-empty, so this proxies "when did sync last touch this profile".
+// It undercounts push-only syncs (no local writes → no snapshot) —
+// good enough for the dashboard's "X hours ago" line, but callers that
+// need exact last-sync time should read a proper LastSyncedAt field
+// (not yet present on state.State).
+func lastSyncActivityTime(ctx *AppContext, profile string) (time.Time, bool) {
+	snaps, err := snapshot.List(filepath.Join(ctx.StateDir, "snapshots"))
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, s := range snaps {
+		if s.Profile != profile {
+			continue
+		}
+		// snapshot.List returns newest first, so the first match wins.
+		return s.CreatedAt, true
+	}
+	return time.Time{}, false
 }

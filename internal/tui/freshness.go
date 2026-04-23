@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/colinc86/ccsync/internal/manifest"
@@ -47,7 +48,7 @@ func (c *AppContext) Summary() SyncSummary {
 		return s
 	}
 	for _, a := range c.Plan.Actions {
-		if a.ExcludedByProfile {
+		if a.ExcludedByProfile || a.ExcludedByDeny {
 			continue
 		}
 		switch a.Action {
@@ -98,16 +99,5 @@ func SummaryBadge(s SyncSummary, compact bool) string {
 	if s.Conflicts > 0 {
 		parts = append(parts, theme.Bad.Render(fmt.Sprintf("! %d conflict", s.Conflicts)))
 	}
-	return joinWithSep(parts, " · ")
-}
-
-func joinWithSep(parts []string, sep string) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	out := parts[0]
-	for _, p := range parts[1:] {
-		out += sep + p
-	}
-	return out
+	return strings.Join(parts, " · ")
 }

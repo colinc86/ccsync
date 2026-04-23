@@ -36,11 +36,11 @@ const (
 type encryptionStep int
 
 const (
-	encStepChoose   encryptionStep = iota // show status + available actions
-	encStepPrompt                         // passphrase input
-	encStepConfirm                        // confirm destructive choice (disable)
-	encStepRunning                        // migration in flight
-	encStepResult                         // terminal — show outcome and pop on key
+	encStepChoose  encryptionStep = iota // show status + available actions
+	encStepPrompt                        // passphrase input
+	encStepConfirm                       // confirm destructive choice (disable)
+	encStepRunning                       // migration in flight
+	encStepResult                        // terminal — show outcome and pop on key
 )
 
 type encryptionAction int
@@ -298,14 +298,16 @@ func (m *encryptionScreenModel) View() string {
 	var sb strings.Builder
 
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	} else if m.message != "" {
-		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
+		sb.WriteString(theme.Good.Render("✓ "+m.message) + "\n\n")
 	}
 
-	// Always show status at the top so the user has context.
-	fmt.Fprintf(&sb, "  %s  %s\n\n",
-		theme.Secondary.Render("status:"), renderEncStatus(m.status))
+	// Hero encryption status card — state-reactive border + big caps
+	// headline. Users come here when they're worried about the
+	// plaintext-ness of the repo; a single card answers that at a
+	// glance before any action lists.
+	sb.WriteString(renderEncStatusCard(m.status) + "\n\n")
 
 	switch m.step {
 	case encStepChoose:
@@ -315,73 +317,112 @@ func (m *encryptionScreenModel) View() string {
 	case encStepConfirm:
 		sb.WriteString(m.renderConfirm())
 	case encStepRunning:
-		sb.WriteString(m.spin.View() + " " + theme.Hint.Render(m.runningLabel()))
+		body := theme.Warn.Bold(true).Render("◌ WORKING") + "\n" +
+			theme.Hint.Render(m.runningLabel())
+		sb.WriteString(theme.CardPending.Width(56).Render(body))
 	case encStepResult:
-		sb.WriteString(theme.Hint.Render("press any key to return"))
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "any key", label: "return", primary: true},
+		}))
 	}
 	return sb.String()
 }
 
-func renderEncStatus(s encStatus) string {
+// renderEncStatusCard turns the encryption state into a hero-style
+// panel. Three states, three border colors: off=neutral (not scary,
+// not affirming — just an info note), on=clean (your secrets are
+// protected), locked=warn (action required on this machine).
+func renderEncStatusCard(s encStatus) string {
+	var glyph, title, body string
+	var card = theme.CardNeutral
 	switch s {
 	case encOff:
-		return theme.Hint.Render("off — repo contents are plaintext in git")
+		glyph = theme.Subtle.Bold(true).Render("◦")
+		title = theme.Subtle.Bold(true).Render("OFF")
+		body = theme.Hint.Render("repo contents are plaintext in git")
 	case encOn:
-		return theme.Good.Render("on — repo contents encrypted; passphrase cached on this machine")
+		glyph = theme.Good.Bold(true).Render("🔒")
+		title = theme.Good.Bold(true).Render("ENCRYPTED")
+		body = theme.Hint.Render("repo contents encrypted · passphrase cached on this machine")
+		card = theme.CardClean
 	case encLocked:
-		return theme.Warn.Render("on (locked) — repo is encrypted but this machine doesn't have the passphrase")
+		glyph = theme.Warn.Bold(true).Render("🔐")
+		title = theme.Warn.Bold(true).Render("LOCKED")
+		body = theme.Hint.Render("the repo is encrypted but this machine has no passphrase yet")
+		card = theme.CardPending
 	}
-	return "?"
+	return card.Width(56).Render(glyph + "  " + title + "\n" + body)
 }
 
 func (m *encryptionScreenModel) renderChoose() string {
 	var sb strings.Builder
 	sb.WriteString(theme.Heading.Render("available actions") + "\n\n")
+	keys := []footerKey{}
 	switch m.status {
 	case encOff:
-		sb.WriteString("  " + theme.Primary.Render("e") + "  enable encryption")
-		sb.WriteString(theme.Hint.Render(" — prompts for a passphrase; re-encrypts every tracked file") + "\n")
+		fmt.Fprintf(&sb, "  %s  %s\n      %s\n\n",
+			theme.Keycap.Render("e"),
+			theme.Primary.Render("enable encryption"),
+			theme.Hint.Render("prompts for a passphrase; re-encrypts every tracked file"))
+		keys = append(keys, footerKey{cap: "e", label: "enable", primary: true})
 	case encOn:
-		sb.WriteString("  " + theme.Primary.Render("d") + "  disable encryption")
-		sb.WriteString(theme.Hint.Render(" — decrypts and recommits; plaintext after this") + "\n")
+		fmt.Fprintf(&sb, "  %s  %s\n      %s\n\n",
+			theme.Keycap.Render("d"),
+			theme.Primary.Render("disable encryption"),
+			theme.Hint.Render("decrypts and recommits · plaintext after this"))
+		keys = append(keys, footerKey{cap: "d", label: "disable", primary: true})
 	case encLocked:
-		sb.WriteString("  " + theme.Primary.Render("u") + "  unlock")
-		sb.WriteString(theme.Hint.Render(" — enter the passphrase so this machine can sync") + "\n")
+		fmt.Fprintf(&sb, "  %s  %s\n      %s\n\n",
+			theme.Keycap.Render("u"),
+			theme.Primary.Render("unlock"),
+			theme.Hint.Render("enter the passphrase set when encryption was enabled elsewhere"))
+		keys = append(keys, footerKey{cap: "u", label: "unlock", primary: true})
 	}
-	sb.WriteString("\n" + theme.Hint.Render("esc back"))
+	keys = append(keys, footerKey{cap: "esc", label: "back"})
+	sb.WriteString(renderFooterBar(keys))
 	return sb.String()
 }
 
 func (m *encryptionScreenModel) renderPrompt() string {
 	var sb strings.Builder
-	label := "passphrase:"
+	label := "passphrase"
 	hint := ""
 	switch m.action {
 	case encActionEnable:
-		label = "new passphrase:"
+		label = "new passphrase"
 		hint = "choose something memorable — you'll need it on every machine you sync from"
 	case encActionUnlock:
-		label = "passphrase:"
+		label = "passphrase"
 		hint = "the passphrase set when encryption was enabled on another machine"
 	}
-	fmt.Fprintf(&sb, "  %s  %s\n", theme.Secondary.Render(label), m.input.View())
+	sb.WriteString(theme.Heading.Render(label) + "\n\n")
+	sb.WriteString("  " + m.input.View() + "\n")
 	if hint != "" {
-		sb.WriteString("\n  " + theme.Hint.Render(hint))
+		sb.WriteString("\n  " + theme.Hint.Render(hint) + "\n")
 	}
-	sb.WriteString("\n\n" + theme.Hint.Render("enter confirm • esc back"))
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "enter", label: "confirm", primary: true},
+		{cap: "esc", label: "back"},
+	}))
 	return sb.String()
 }
 
 func (m *encryptionScreenModel) renderConfirm() string {
 	var sb strings.Builder
-	sb.WriteString(theme.Warn.Render("disable encryption?") + "\n\n")
-	sb.WriteString(theme.Hint.Render(
-		"every tracked file in the repo will be decrypted and pushed up as a\n" +
-			"migration commit. once done, repo contents are visible to anyone with\n" +
-			"read access to the remote."))
-	sb.WriteString("\n\n" +
-		theme.Primary.Render("y") + "  confirm disable • " +
-		theme.Hint.Render("esc back"))
+	// Red-bordered card for a destructive action — decrypting the
+	// repo is a one-way commit that exposes contents to everyone
+	// with remote read access. Lean into that visual weight so the
+	// user doesn't confirm on autopilot.
+	body := theme.Bad.Render("! DISABLE ENCRYPTION?") + "\n" +
+		theme.Subtle.Render(
+			"every tracked file in the repo will be decrypted and pushed up\n"+
+				"as a migration commit. repo contents become visible to anyone\n"+
+				"with read access to the remote.")
+	sb.WriteString(theme.CardConflict.Width(60).Render(body) + "\n\n")
+	sb.WriteString(renderFooterBar([]footerKey{
+		{cap: "y", label: "confirm disable", primary: true},
+		{cap: "esc", label: "back"},
+	}))
 	return sb.String()
 }
 

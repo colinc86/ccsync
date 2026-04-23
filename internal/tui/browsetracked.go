@@ -14,6 +14,7 @@ import (
 
 	"github.com/colinc86/ccsync/internal/config"
 	"github.com/colinc86/ccsync/internal/discover"
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/ignore"
 	syncpkg "github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
@@ -210,10 +211,21 @@ func (m *browseTrackedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.promoting = false
 		if msg.err != nil {
 			m.err = msg.err
-		} else {
-			m.message = "promoted to default (shared across profiles)"
+			// Surface failures as an error toast so the user sees
+			// the outcome even if they've navigated away from the
+			// inline `m.err` banner by the time the Cmd returns.
+			return m, tea.Batch(
+				loadBrowseEntries(m.ctx),
+				showToast("promote failed: "+msg.err.Error(), toastError),
+			)
 		}
-		return m, loadBrowseEntries(m.ctx)
+		// Clear the inline banner — the toast is the new primary
+		// feedback surface for one-shot outcomes.
+		m.message = ""
+		return m, tea.Batch(
+			loadBrowseEntries(m.ctx),
+			showToast("promoted to default · shared across profiles", toastSuccess),
+		)
 
 	case tea.KeyMsg:
 		if m.filtering {
@@ -559,6 +571,10 @@ func defaultExtensionPattern(rel string) string {
 
 // appendSyncignore writes a rule to .syncignore. Creates the file if missing
 // and skips the write entirely if the exact pattern is already present.
+// Writes via tmp+rename to match every other atomic-write path in the
+// codebase (iteration 13 closed the last non-atomic one in
+// config.SaveWithBackup); a mid-write crash here would otherwise leave
+// .syncignore truncated and drop patterns the user thinks are applied.
 func appendSyncignore(path, pattern string) error {
 	var existing []byte
 	if data, err := os.ReadFile(path); err == nil {
@@ -576,7 +592,16 @@ func appendSyncignore(path, pattern string) error {
 		existing = append(existing, '\n')
 	}
 	existing = append(existing, []byte(pattern+"\n")...)
-	return os.WriteFile(path, existing, 0o644)
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, existing, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // patternForPath chooses the ccsync.yaml exclude pattern to use for a path.
@@ -598,20 +623,32 @@ func (m *browseTrackedModel) View() string {
 		return m.spin.View() + " " + theme.Hint.Render("walking local Claude config…")
 	}
 	if m.promoting {
-		return theme.Hint.Render("promoting to default (committing + pushing)…")
+		card := theme.CardPending.Width(56).Render(
+			theme.Warn.Bold(true).Render("◌ PROMOTING") + "\n" +
+				theme.Hint.Render("committing the move and pushing to the remote…"))
+		return card
 	}
 	if m.err != nil {
-		sb.WriteString(theme.Bad.Render("error: "+m.err.Error()) + "\n\n")
+		sb.WriteString(renderError(m.err) + "\n\n")
 	} else if m.message != "" {
-		sb.WriteString(theme.Good.Render(m.message) + "\n\n")
+		sb.WriteString(theme.Good.Render("✓ "+m.message) + "\n\n")
 	}
 	if m.promotingPath != "" {
-		fmt.Fprintf(&sb, "%s %s\n", theme.Warn.Render("promote"), m.promotingPath)
-		sb.WriteString(theme.Hint.Render(
-			"moves this file from profiles/"+m.ctx.State.ActiveProfile+
-				"/ to profiles/default/ in the repo so every profile\n"+
-				"that extends default picks it up on next sync.") + "\n\n")
-		sb.WriteString(theme.Primary.Render("y") + " confirm   " + theme.Hint.Render("n cancel"))
+		// Confirmation card — red-bordered CardConflict is too loud
+		// (this isn't a conflict); pending-warm signals "you're about
+		// to commit something" at the right intensity.
+		var body strings.Builder
+		body.WriteString(theme.Warn.Bold(true).Render("↗ PROMOTE") + "  " +
+			theme.Subtle.Render(m.promotingPath) + "\n\n")
+		body.WriteString(theme.Hint.Render(
+			"moves this file from profiles/"+m.ctx.State.ActiveProfile+"/\n" +
+				"to profiles/default/ in the repo so every profile\n" +
+				"that extends default picks it up on next sync."))
+		sb.WriteString(theme.CardPending.Width(60).Render(body.String()) + "\n\n")
+		sb.WriteString(renderFooterBar([]footerKey{
+			{cap: "y", label: "confirm", primary: true},
+			{cap: "n", label: "cancel"},
+		}))
 		return sb.String()
 	}
 	if m.ignoring != ignoreOff {
@@ -638,11 +675,17 @@ func (m *browseTrackedModel) View() string {
 			excludedCount++
 		}
 	}
-	fmt.Fprintf(&sb, "%s  %s  %s\n\n",
-		theme.Secondary.Render(fmt.Sprintf("%d file(s)", len(m.entries))),
-		theme.Warn.Render(fmt.Sprintf("%d excluded", excludedCount)),
-		theme.Good.Render(fmt.Sprintf("%d syncing", len(m.entries)-excludedCount)),
-	)
+	// Stats chip row — total, syncing (green), excluded (muted).
+	// Scannable summary that replaces the pre-iter-5 three-color
+	// text run.
+	chips := []string{
+		theme.ChipNeutral.Render(humanize.Count(len(m.entries), "file") + " total"),
+		theme.ChipGood.Render(fmt.Sprintf("✓ %d syncing", len(m.entries)-excludedCount)),
+	}
+	if excludedCount > 0 {
+		chips = append(chips, theme.ChipWarn.Render(fmt.Sprintf("⊘ %d excluded", excludedCount)))
+	}
+	sb.WriteString(strings.Join(chips, theme.Rule.Render("  ·  ")) + "\n\n")
 
 	start, end := windowAround(m.cursor, len(m.filtered), 20)
 	for i := start; i < end; i++ {
@@ -662,14 +705,21 @@ func (m *browseTrackedModel) View() string {
 		}
 		fmt.Fprintf(&sb, "%s%s  %s\n", cursor, box, line)
 	}
+	// Scroll indicator when the list exceeds the window — tells
+	// users there's more off-screen they can navigate to.
+	if len(m.filtered) > 20 {
+		sb.WriteString(theme.Hint.Render(fmt.Sprintf(
+			"\n  %d–%d of %d · ↑↓ to scroll", start+1, end, len(m.filtered))))
+	}
 
-	sb.WriteString("\n" +
-		theme.Primary.Render("space ") + "toggle • " +
-		theme.Primary.Render("p ") + "promote to default • " +
-		theme.Primary.Render("i ") + "syncignore • " +
-		theme.Primary.Render("w ") + "why • " +
-		theme.Primary.Render("/ ") + "filter • " +
-		theme.Hint.Render("↑↓ move • c clear"))
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "space", label: "toggle exclude", primary: true},
+		{cap: "p", label: "promote to default"},
+		{cap: "i", label: "syncignore"},
+		{cap: "w", label: "why"},
+		{cap: "/", label: "filter"},
+		{cap: "↑↓", label: "move"},
+	}))
 	return sb.String()
 }
 

@@ -10,10 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/colinc86/ccsync/internal/config"
+	"github.com/colinc86/ccsync/internal/gitx"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
 	"github.com/colinc86/ccsync/internal/sync"
@@ -175,6 +177,25 @@ type screen interface {
 	Title() string
 }
 
+// renderError is the TUI-wide convention for showing an error in a
+// screen's View. Routes through gitx.Friendly so known sentinels
+// (auth required, repo not found, non-fast-forward, network) collapse
+// to one-liners without the go-git chain trailing after. Returns ""
+// for nil so callers can unconditionally append its result.
+//
+// Rendered as a red-bordered card so errors feel like an event the
+// user needs to acknowledge, not a line of prose they might miss in
+// a busy screen. The `!` glyph + "ERROR" caps title mirror every
+// other hero-card state (clean/pending/conflict) for visual rhythm.
+func renderError(err error) string {
+	if err == nil {
+		return ""
+	}
+	body := theme.Bad.Render("! ERROR") + "\n" +
+		theme.Subtle.Render(gitx.Friendly(err))
+	return theme.CardConflict.Width(56).Render(body)
+}
+
 // escapeCapturer is an optional screen capability: when CapturesEscape()
 // returns true, the app routes the esc key to the screen's Update instead of
 // popping. Screens with modal sub-states (editing a field, confirming a
@@ -191,6 +212,20 @@ type AppModel struct {
 	width   int
 	height  int
 	help    bool // `?` overlay visible
+
+	// toast is the current transient notice overlay, nil when absent.
+	// toastSeq bumps on every showToastMsg so stale expire ticks (from
+	// a toast that got replaced by a newer one) don't cut the
+	// replacement short.
+	toast    *toastPayload
+	toastSeq int
+
+	// palette is the Ctrl+K command-palette overlay. Nil when
+	// closed. Owns its own Update while visible so the underlying
+	// screen doesn't see palette keystrokes (users typing into the
+	// palette would otherwise trigger shortcuts on whatever screen
+	// they had open).
+	palette *paletteModel
 
 	// autoWatchCh is the subscription channel delivering debounced file-
 	// change events from the filesystem watcher goroutine. Non-nil only
@@ -234,6 +269,7 @@ func (m AppModel) Init() tea.Cmd {
 		schedulePeriodicRefresh(m.ctx),
 		startAutoWatchCmd(m.ctx),
 		checkForUpdateCmd(),
+		paletteTipOnceCmd(m.ctx),
 		schedulePeriodicUpdateCheck(),
 	}
 	if len(m.screens) > 0 {
@@ -266,9 +302,27 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.help = false
 			return m, nil
 		}
+		// Command palette captures all input while visible. It owns
+		// its own navigation + closes via paletteClosedMsg (handled
+		// below), so route every key straight through and stop.
+		if m.palette != nil {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			p, cmd := m.palette.Update(msg)
+			m.palette = p
+			return m, cmd
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
+		case "ctrl+k":
+			// Open the command palette. ctrl+k mirrors the VS-Code /
+			// Linear convention; on macOS this doesn't conflict with
+			// any system shortcut, and on the Linux side bubbletea
+			// passes it through cleanly.
+			m.palette = newPalette(m.ctx)
+			return m, textinput.Blink
 		case "q":
 			if len(m.screens) == 1 {
 				return m, tea.Quit
@@ -397,6 +451,35 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ctx.AutoSyncing = false
 		m.ctx.RefreshState()
 		return m, refreshPlanCmd(m.ctx)
+
+	case paletteClosedMsg:
+		// The command palette is dismissed — clear the overlay so the
+		// underlying screen starts receiving keystrokes again.
+		m.palette = nil
+		return m, nil
+	case paletteOpenHelpMsg:
+		// The palette asked to open the help overlay on its way out.
+		// Flip the help flag; the palette has already been cleared by
+		// the paletteClosedMsg that batched alongside this.
+		m.help = true
+		return m, nil
+
+	case showToastMsg:
+		// A screen has asked to surface a transient notice. Bump the
+		// sequence so any in-flight expire tick for the previous
+		// toast is invalidated; schedule a fresh expire for this one.
+		m.toastSeq++
+		m.toast = &toastPayload{id: m.toastSeq, kind: msg.kind, text: msg.text}
+		return m, scheduleToastExpire(m.toastSeq)
+	case toastExpireMsg:
+		// Only clear when the expiring tick matches the current
+		// toast's id. A newer toast arriving during this Tick's
+		// window will have bumped toastSeq; the stale tick lands
+		// here and is a no-op.
+		if m.toast != nil && m.toast.id == msg.id {
+			m.toast = nil
+		}
+		return m, nil
 	}
 
 	top := m.screens[len(m.screens)-1]
@@ -419,33 +502,104 @@ func (m AppModel) View() string {
 	}
 	top := m.screens[len(m.screens)-1]
 	header := renderHeader(m.screens, m.ctx, m.width)
+	rule := renderHeaderRule(m.width)
 	status := statusBar(m.ctx)
-	footer := theme.Hint.Render(navigationHint(m.screens) + " • ? help")
+	footer := theme.Hint.Render(navigationHint(m.screens) + " • ctrl+k palette • ? help")
 	body := top.View()
 	if m.help {
 		body = renderHelpOverlay()
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", status, footer)
+	// Command palette takes precedence over the help overlay (same
+	// screen-estate slot). When it's open, the shell shows the
+	// palette instead of the screen's body so input focus is
+	// visually obvious — the user is driving the palette, not the
+	// screen underneath.
+	if m.palette != nil {
+		body = renderPalette(m.palette)
+	}
+
+	// Toast slot — right-justified strip above the status bar. Only
+	// reserved when a toast is active so there's no empty gap
+	// bouncing the layout around between "no toast" and "toast
+	// present" frames. The toast is rendered as a bordered pill;
+	// PlaceHorizontal slides it to the right edge with the body's
+	// width for anchor.
+	var toastLine string
+	if m.toast != nil {
+		t := renderToast(m.toast)
+		if m.width > 0 {
+			toastLine = lipgloss.PlaceHorizontal(m.width, lipgloss.Right, t)
+		} else {
+			toastLine = t
+		}
+	}
+
+	pieces := []string{header, rule, "", body}
+	if toastLine != "" {
+		pieces = append(pieces, "", toastLine)
+	}
+	pieces = append(pieces, "", status, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, pieces...)
 }
 
-// renderHeader builds the top line: breadcrumbs on the left, a compact
-// freshness badge on the right. When the terminal width isn't known yet
-// (WindowSizeMsg hasn't arrived), we fall back to a space-separated
-// left-aligned layout — still correct, just not right-justified.
+// renderHeader builds the app-shell top strip: a tiny accented ccsync
+// logo on the far left, the breadcrumb trail, and — right-justified —
+// a profile chip + the compact freshness badge. When the terminal
+// width isn't known yet, we fall back to a left-aligned layout
+// (still correct, just not right-justified).
+//
+// The strip is deliberately thin: screens own the visual weight via
+// their own hero cards. The header is a navigation/context rail,
+// not a page title.
 func renderHeader(screens []screen, ctx *AppContext, width int) string {
+	logo := theme.WordmarkStyle.Render("ccsync")
 	crumbs := renderBreadcrumbs(screens)
-	if ctx == nil || ctx.State == nil || ctx.State.SyncRepoURL == "" {
-		return crumbs
+	left := logo
+	if crumbs != "" {
+		left = logo + theme.Subtle.Render("  ›  ") + crumbs
 	}
-	badge := SummaryBadge(ctx.Summary(), true)
-	if badge == "" {
-		return crumbs
+
+	right := renderHeaderRight(ctx)
+	if right == "" {
+		return left
 	}
 	if width <= 0 {
-		return crumbs + "  " + badge
+		return left + "  " + right
 	}
-	gap := max(2, width-lipgloss.Width(crumbs)-lipgloss.Width(badge))
-	return crumbs + strings.Repeat(" ", gap) + badge
+	gap := max(2, width-lipgloss.Width(left)-lipgloss.Width(right))
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// renderHeaderRight builds the right-hand cluster: a profile chip
+// (visible once bootstrapped) followed by the compact sync badge.
+// Returns empty when we have nothing to show (pre-bootstrap / no
+// summary available).
+func renderHeaderRight(ctx *AppContext) string {
+	if ctx == nil || ctx.State == nil || ctx.State.SyncRepoURL == "" {
+		return ""
+	}
+	badge := SummaryBadge(ctx.Summary(), true)
+	profile := ctx.State.ActiveProfile
+	if profile == "" {
+		return badge
+	}
+	chip := theme.ChipNeutral.Render("◉ " + profile)
+	if badge == "" {
+		return chip
+	}
+	return chip + theme.Subtle.Render("  ·  ") + badge
+}
+
+// renderHeaderRule draws a one-char-tall divider right under the
+// header. A thin row of light accent glyphs sits between the nav
+// strip and the body, giving the app a consistent "this is the top"
+// anchor regardless of which screen is up. Falls back to an em-dash
+// rule when width is unknown (initial frame before WindowSizeMsg).
+func renderHeaderRule(width int) string {
+	if width <= 0 {
+		return theme.Rule.Render(strings.Repeat("─", 40))
+	}
+	return theme.Rule.Render(strings.Repeat("─", width))
 }
 
 // navigationHint picks the right one-liner for the current stack. On Home
@@ -458,19 +612,22 @@ func navigationHint(screens []screen) string {
 	return "esc back"
 }
 
-// renderBreadcrumbs returns the header line: each screen's title separated
-// by a subtle chevron, with only the leaf rendered in the heading style.
+// renderBreadcrumbs returns the breadcrumb trail for the header. The
+// leaf is rendered in the secondary accent (not the loud Heading
+// underline — that'd compete with the screen's own page heading);
+// non-leaf crumbs are muted. Chevron separator is subtle so the path
+// reads as one fluid element.
 func renderBreadcrumbs(screens []screen) string {
 	if len(screens) == 0 {
 		return ""
 	}
 	if len(screens) == 1 {
-		return theme.Heading.Render(screens[0].Title())
+		return theme.Secondary.Render(screens[0].Title())
 	}
 	var parts []string
 	for i, s := range screens {
 		if i == len(screens)-1 {
-			parts = append(parts, theme.Heading.Render(s.Title()))
+			parts = append(parts, theme.Secondary.Render(s.Title()))
 		} else {
 			parts = append(parts, theme.Subtle.Render(s.Title()))
 		}

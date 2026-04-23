@@ -91,11 +91,19 @@ func nextAutoWatchEventCmd(ch <-chan struct{}) tea.Cmd {
 // runAutoWatch is the goroutine body. It wraps fsnotify, applies ignore
 // rules, and debounces a burst of events into a single channel write. It
 // exits cleanly when ctx is canceled (AppModel's teardown path).
+//
+// Shutdown safety: time.AfterFunc's callback runs in its own goroutine
+// and isn't stopped by the outer select's ctx.Done exit. A naive
+// `defer close(out)` would race with a pending timer whose callback
+// then sends on a closed channel → panic. The `closed` flag under mu
+// lets fire() opt out once we're tearing down. Today the app never
+// actually cancels this context (it's orphaned at tea.Quit per the
+// autoWatchStartedMsg handler) but the protection lands for free and
+// keeps the code correct if proper shutdown is ever wired up.
 func runAutoWatch(ctx context.Context, app *AppContext, out chan<- struct{}) {
-	defer close(out)
-
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
+		close(out)
 		return
 	}
 	defer w.Close()
@@ -116,15 +124,35 @@ func runAutoWatch(ctx context.Context, app *AppContext, out chan<- struct{}) {
 	}
 
 	var (
-		mu    sync.Mutex
-		timer *time.Timer
+		mu     sync.Mutex
+		timer  *time.Timer
+		closed bool
 	)
 	fire := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if closed {
+			return
+		}
 		select {
 		case out <- struct{}{}:
 		default: // buffered(1) — coalesce if receiver is busy
 		}
 	}
+	// Single teardown point: stop any pending timer, mark closed under
+	// the mutex so any later fire() invocation sees closed=true and
+	// bails before touching `out`, then close the channel. Order
+	// matters: set the flag and close within a critical section so
+	// fire() can't observe closed=false and still race the close.
+	defer func() {
+		mu.Lock()
+		if timer != nil {
+			timer.Stop()
+		}
+		closed = true
+		mu.Unlock()
+		close(out)
+	}()
 
 	for {
 		select {

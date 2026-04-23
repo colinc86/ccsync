@@ -38,10 +38,12 @@ type Plan struct {
 }
 
 // Summary returns +<added> ~<modified> -<deleted> counts. Profile-excluded
-// actions don't count toward any bucket.
+// AND per-machine denied actions don't count — sync.Run skips both at
+// apply time, so they shouldn't appear as "pending work" in previews
+// or the dashboard badge.
 func (p Plan) Summary() (added, modified, deleted int) {
 	for _, a := range p.Actions {
-		if a.ExcludedByProfile {
+		if a.ExcludedByProfile || a.ExcludedByDeny {
 			continue
 		}
 		switch a.Action {

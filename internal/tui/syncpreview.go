@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/colinc86/ccsync/internal/gitx"
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/manifest"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/sync"
@@ -89,6 +90,15 @@ func buildSyncInputs(ctx *AppContext, dryRun bool) (sync.Inputs, error) {
 		DryRun:      dryRun,
 		Auth:        buildAuth(ctx),
 	}, nil
+}
+
+// BuildAuth produces a transport.AuthMethod from the user's persisted
+// auth settings — SSH (default) or HTTPS-with-token. Exported so the
+// CLI in cmd/ccsync can honor the user's choice instead of hardcoding
+// SSH on every headless subcommand (the pre-v0.6.17 behavior silently
+// broke all HTTPS users on `ccsync sync`, `ccsync rollback`, etc.).
+func BuildAuth(ctx *AppContext) transport.AuthMethod {
+	return buildAuth(ctx)
 }
 
 func buildAuth(ctx *AppContext) transport.AuthMethod {
@@ -217,14 +227,14 @@ func (m *syncPreviewModel) View() string {
 		return m.spin.View() + " " + theme.Hint.Render("computing change set…")
 	}
 	if m.err != nil {
-		return theme.Bad.Render("error: ") + m.err.Error()
+		return renderError(m.err)
 	}
 
 	var sb strings.Builder
 	var push, pull []sync.FileAction
 	excluded := 0
 	for _, a := range m.plan.Actions {
-		if a.ExcludedByProfile {
+		if a.ExcludedByProfile || a.ExcludedByDeny {
 			excluded++
 			continue
 		}
@@ -244,6 +254,11 @@ func (m *syncPreviewModel) View() string {
 		}
 	}
 
+	// Wordmark + screen label so the preview lives in the same visual
+	// family as Home. The identity strip is consistent; the label
+	// tells the user where they are.
+	sb.WriteString(theme.Wordmark("sync preview") + "\n\n")
+
 	// First-sync banner: when we've never synced on this machine, the
 	// stakes are higher (push commits become the baseline for the repo;
 	// pull introduces a wave of brand-new local files). Loud banner makes
@@ -254,11 +269,26 @@ func (m *syncPreviewModel) View() string {
 			"⚑ first sync on this machine — review carefully before applying") + "\n\n")
 	}
 
-	fmt.Fprintf(&sb, "%s   %s   %s\n",
-		theme.Warn.Render(fmt.Sprintf("↑ %d push", len(push))),
-		theme.Warn.Render(fmt.Sprintf("↓ %d pull", len(pull))),
-		theme.Bad.Render(fmt.Sprintf("! %d conflict", len(m.plan.Conflicts))),
-	)
+	// Stats row — color-coded chips for push/pull/conflict counts.
+	// Replaces the old "↑ 2 push   ↓ 3 pull" arrow string with a
+	// denser, more scannable layout. Zero counts are elided so a
+	// push-only sync doesn't show a confusing "↓ 0 pull".
+	var chips []string
+	if len(push) > 0 {
+		chips = append(chips, theme.ChipWarn.Render(fmt.Sprintf("↑ %d push", len(push))))
+	}
+	if len(pull) > 0 {
+		chips = append(chips, theme.ChipWarn.Render(fmt.Sprintf("↓ %d pull", len(pull))))
+	}
+	if n := len(m.plan.Conflicts); n > 0 {
+		chips = append(chips, theme.ChipBad.Render(fmt.Sprintf("! %d conflict", n)))
+	}
+	if excluded > 0 {
+		chips = append(chips, theme.ChipNeutral.Render(fmt.Sprintf("⊘ %d excluded", excluded)))
+	}
+	if len(chips) > 0 {
+		sb.WriteString(strings.Join(chips, theme.Rule.Render("  ·  ")) + "\n")
+	}
 
 	// Plain-English recap so a user doesn't have to decode the arrows.
 	if summary := naturalLanguageSummary(push, pull, m.plan.Conflicts); summary != "" {
@@ -270,8 +300,8 @@ func (m *syncPreviewModel) View() string {
 		sb.WriteString(theme.Good.Render("in sync — nothing to do"))
 		if excluded > 0 {
 			sb.WriteString("\n" + theme.Hint.Render(
-				fmt.Sprintf("(%d path(s) excluded by profile %q — run `ccsync why <path>`)",
-					excluded, m.ctx.State.ActiveProfile)))
+				fmt.Sprintf("(%s excluded by profile %q — run `ccsync why <path>`)",
+					humanize.Count(excluded, "path"), m.ctx.State.ActiveProfile)))
 		}
 		return sb.String()
 	}
@@ -324,17 +354,18 @@ func (m *syncPreviewModel) View() string {
 
 	if excluded > 0 {
 		sb.WriteString(theme.Hint.Render(
-			fmt.Sprintf("%d path(s) excluded by profile %q — run `ccsync why <path>` to see which rule",
-				excluded, m.ctx.State.ActiveProfile)) + "\n")
+			fmt.Sprintf("%s excluded by profile %q — run `ccsync why <path>` to see which rule",
+				humanize.Count(excluded, "path"), m.ctx.State.ActiveProfile)) + "\n")
 	}
 
-	sb.WriteString("\n" +
-		theme.Primary.Render("enter ") + "apply all • " +
-		theme.Primary.Render("p ") + "pull only • " +
-		theme.Primary.Render("u ") + "push only • " +
-		theme.Primary.Render("d ") + "diff • " +
-		theme.Primary.Render("s ") + "selective • " +
-		theme.Hint.Render("↑↓ move • esc cancel"))
+	sb.WriteString("\n" + renderFooterBar([]footerKey{
+		{cap: "enter", label: "apply all", primary: true},
+		{cap: "p", label: "pull only"},
+		{cap: "u", label: "push only"},
+		{cap: "d", label: "diff"},
+		{cap: "s", label: "selective"},
+		{cap: "esc", label: "cancel"},
+	}))
 	return sb.String()
 }
 
@@ -350,7 +381,7 @@ func (m *syncPreviewModel) planIsClean() bool {
 func (m *syncPreviewModel) recomputeVisible() {
 	m.visible = m.visible[:0]
 	for i, a := range m.plan.Actions {
-		if a.ExcludedByProfile {
+		if a.ExcludedByProfile || a.ExcludedByDeny {
 			continue
 		}
 		if a.Action == manifest.ActionNoOp {
@@ -414,57 +445,47 @@ func safeReadFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// naturalLanguageSummary builds a short human recap of what the plan will
-// do. Returns "" for an empty plan so callers don't render a blank row.
+// naturalLanguageSummary builds a short human recap of what the plan
+// will do. Returns "" for an empty plan so callers don't render a
+// blank row.
 //
 // Examples:
-//   "This sync will pull 5 files from the repo to ~/.claude."
-//   "This sync will push 3 local files up to the repo and pull 2 down."
-//   "This sync has 1 conflict — resolve before applying."
+//
+//	"This sync will pull 5 files down into ~/.claude."
+//	"This sync will push 3 local files up to the repo and pull 2 files down into ~/.claude."
+//	"1 conflict needs manual resolution."
+//	"This sync will push 2 local files up to the repo. 3 conflicts need manual resolution."
 func naturalLanguageSummary(push, pull []sync.FileAction, conflicts []sync.FileConflict) string {
 	var parts []string
 	if n := len(push); n > 0 {
-		parts = append(parts, fmt.Sprintf("push %d local file%s up to the repo",
-			n, plural(n)))
+		parts = append(parts, fmt.Sprintf("push %s up to the repo", humanize.Count(n, "local file")))
 	}
 	if n := len(pull); n > 0 {
-		parts = append(parts, fmt.Sprintf("pull %d file%s down into ~/.claude",
-			n, plural(n)))
-	}
-	if len(parts) == 0 && len(conflicts) == 0 {
-		return ""
+		parts = append(parts, fmt.Sprintf("pull %s down into ~/.claude", humanize.Count(n, "file")))
 	}
 	var out string
 	switch len(parts) {
 	case 0:
-		// only conflicts — handled below
+		// handled below — only conflicts
 	case 1:
 		out = "This sync will " + parts[0] + "."
 	case 2:
 		out = "This sync will " + parts[0] + " and " + parts[1] + "."
 	}
 	if n := len(conflicts); n > 0 {
-		c := fmt.Sprintf(" %d conflict%s need%s manual resolution.", n, plural(n), oneIfSingular(n))
-		out += c
+		verb := "need"
+		if n == 1 {
+			verb = "needs"
+		}
+		conflictSentence := fmt.Sprintf("%s %s manual resolution.",
+			humanize.Count(n, "conflict"), verb)
+		if out != "" {
+			out += " " + conflictSentence
+		} else {
+			out = conflictSentence
+		}
 	}
 	return out
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
-}
-
-// oneIfSingular returns "" for a singular subject ("1 conflict needs…") and
-// "s" for plural ("2 conflicts need…") — matches subject-verb agreement for
-// the specific pattern in naturalLanguageSummary.
-func oneIfSingular(n int) string {
-	if n == 1 {
-		return "s"
-	}
-	return ""
 }
 
 // directionFilter returns the set of repo paths on one side of the sync:
@@ -473,7 +494,7 @@ func oneIfSingular(n int) string {
 func directionFilter(plan sync.Plan, wantPush bool) map[string]bool {
 	out := map[string]bool{}
 	for _, a := range plan.Actions {
-		if a.ExcludedByProfile || a.Action == manifest.ActionNoOp {
+		if a.ExcludedByProfile || a.ExcludedByDeny || a.Action == manifest.ActionNoOp {
 			continue
 		}
 		if wantPush && isPushAction(a.Action) {
