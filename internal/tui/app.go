@@ -74,6 +74,17 @@ type AppContext struct {
 	// while an earlier auto-sync is still in flight.
 	AutoSyncing bool
 
+	// PendingProfileChoice latches after a successful bootstrap
+	// until the user has picked or created a profile. Gates the
+	// auto-sync launcher: on a fresh install in auto mode, the
+	// first plan refresh would otherwise fire a background sync
+	// under the hardcoded "default" profile BEFORE the user
+	// chose theirs, landing their local ~/.claude content as a
+	// commit under the wrong profile. The gate clears when
+	// profile picker's finalize runs, after which auto-sync
+	// resumes normally.
+	PendingProfileChoice bool
+
 	// RestartBinaryPath, when non-empty after the TUI exits, signals
 	// main() to syscall.Exec the named binary in place of the current
 	// process. Set by the Update screen after a successful self-

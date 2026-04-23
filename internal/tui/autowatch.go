@@ -240,6 +240,14 @@ func maybeLaunchAutoSync(ctx *AppContext) tea.Cmd {
 	if !ctx.State.IsAutoMode() {
 		return nil
 	}
+	if ctx.PendingProfileChoice {
+		// Bootstrap just landed and the user hasn't picked a
+		// profile yet. Firing a real sync here would commit their
+		// local content under whatever ActiveProfile bootstrap
+		// defaulted to (typically "default"), tangling the post-
+		// picker state. Defer until the picker clears the flag.
+		return nil
+	}
 	if ctx.AutoSyncedOnLaunch || ctx.AutoSyncing {
 		return nil
 	}

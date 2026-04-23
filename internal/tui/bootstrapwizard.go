@@ -87,9 +87,16 @@ func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.done = msg.st
 		m.step = stepDone
 		if m.done != nil {
-			// refresh context state so Home shows bootstrapped status, and
-			// kick off the first plan fetch now that we have a repo.
+			// Refresh context state so Home shows bootstrapped
+			// status. Latch PendingProfileChoice so the auto-sync
+			// launcher defers until the user has picked or
+			// created their profile — otherwise a fresh auto-mode
+			// install would silently commit local ~/.claude
+			// content under the hardcoded "default" profile
+			// before the user was ever prompted. The picker's
+			// finalize clears the flag.
 			m.ctx.State = m.done
+			m.ctx.PendingProfileChoice = true
 			return m, refreshPlanCmd(m.ctx)
 		}
 		return m, nil

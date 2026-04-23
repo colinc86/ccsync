@@ -208,11 +208,15 @@ func (m *profilePickerModel) updateCreating(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 
 // finalizeAs switches state to an existing profile name, marks
 // onboarding complete, and returns a Cmd reporting the result.
+// Clears ctx.PendingProfileChoice so the auto-sync gate the
+// bootstrap wizard set up drops — from this point forward, auto-
+// mode can fire a real sync because the profile is settled.
 func (m *profilePickerModel) finalizeAs(name string) tea.Cmd {
 	ctx := m.ctx
 	return func() tea.Msg {
 		ctx.State.ActiveProfile = name
 		ctx.State.OnboardingComplete = true
+		ctx.PendingProfileChoice = false
 		if err := state.Save(ctx.StateDir, ctx.State); err != nil {
 			return profilePickerDoneMsg{err: err}
 		}
@@ -242,6 +246,7 @@ func (m *profilePickerModel) finalizeCreating(name string) tea.Cmd {
 		}
 		ctx.State.ActiveProfile = name
 		ctx.State.OnboardingComplete = true
+		ctx.PendingProfileChoice = false
 		if err := state.Save(ctx.StateDir, ctx.State); err != nil {
 			return profilePickerDoneMsg{err: err}
 		}
