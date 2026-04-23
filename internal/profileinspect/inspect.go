@@ -68,6 +68,24 @@ func Inspect(in Inputs) (*View, error) {
 	syncMatcher := loadSyncignore(in.RepoPath, in.Config.DefaultSyncignore)
 	repoByRel := walkRepoChain(in.RepoPath, resolved.Chain, syncMatcher)
 
+	// Profile-excluded paths that ONLY exist on the repo side (never
+	// pulled to local because the profile's exclude rule blocked
+	// them) also need to flip to StatusExcluded. walkLocal only
+	// annotates the excluded map for paths it saw on disk; pre-fix
+	// everything else fell through to statusFor and reported
+	// StatusPendingPull, tempting the user into a sync that fights
+	// the exclusion their profile already declares. Apply the same
+	// matcher to the repo-side keys so inherited excludes surface
+	// correctly on a freshly-bootstrapped child profile.
+	if resolved.HasExcludes() {
+		profileMatcher := ignore.New(resolved.ExcludeRules())
+		for rel := range repoByRel {
+			if profileMatcher.Matches(rel) {
+				excluded[rel] = true
+			}
+		}
+	}
+
 	// 4. Combine into Items. Each unique rel-path (relative to the
 	//    active profile prefix) produces zero-or-more Items — mcp
 	//    servers expand to one Item per server under the

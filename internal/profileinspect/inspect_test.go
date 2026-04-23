@@ -194,6 +194,94 @@ func TestInspect_MCPServerStatusIsPerEntry(t *testing.T) {
 	}
 }
 
+// TestInspect_InheritedExcludeShowsAsExcludedNotPendingPull pins
+// the bug reported after the v0.8 "untrack via space" flow on a
+// second machine: the child profile extends "default", default
+// declares `exclude: [claude/skills/b/**]`, and skills/b exists in
+// the repo (pushed before the exclude rule). Inspect should
+// surface skills/b as StatusExcluded on the child profile since
+// EffectiveProfile folds parent excludes into the child's rule
+// set. Pre-fix, the excluded map was only populated from the
+// local disk walk, so repo-only-yet-excluded paths fell through
+// to StatusPendingPull and tempted the user into a sync that
+// re-fought the exclusion the profile already said to honour —
+// the "unpushed changes / conflicts" surface.
+func TestInspect_InheritedExcludeShowsAsExcludedNotPendingPull(t *testing.T) {
+	tmp := t.TempDir()
+	claudeDir := filepath.Join(tmp, "home", ".claude")
+	claudeJSON := filepath.Join(tmp, "home", ".claude.json")
+	repoPath := filepath.Join(tmp, "repo")
+
+	writeFile := func(path, content string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Repo has default/skills/b/SKILL.md (excluded rule added later).
+	writeFile(filepath.Join(repoPath, "profiles/default/claude/skills/b/SKILL.md"),
+		"---\nname: beta\n---\n# body\n")
+	// Local has nothing for this path — the file never reached disk
+	// because the exclude rule on this machine's profile kept the
+	// pull out.
+	writeFile(claudeJSON, `{}`)
+
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Profiles["default"] = Profile(cfg.Profiles["default"], "", nil, []string{"claude/skills/b/**"})
+	cfg.Profiles["laptop"] = Profile(Spec{}, "default", nil, nil)
+
+	st := &state.State{ActiveProfile: "laptop", LastSyncedSHA: map[string]string{}}
+	v, err := Inspect(Inputs{
+		Config: cfg, State: st,
+		ClaudeDir: claudeDir, ClaudeJSON: claudeJSON, RepoPath: repoPath,
+	})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+
+	var got *Item
+	for _, s := range v.Sections {
+		for i := range s.Items {
+			it := &s.Items[i]
+			if it.Title == "beta" {
+				got = it
+			}
+		}
+	}
+	if got == nil {
+		t.Fatal("expected the beta skill item to appear in the inspect view")
+	}
+	if got.Status != StatusExcluded {
+		t.Errorf("beta status = %q, want excluded — the laptop profile inherits default's exclude of skills/b/**; the row should render as ☐ excluded instead of ☑ pending pull, otherwise pressing enter on the user's 'apply' action would drag in a file their profile declared they don't want",
+			got.Status.String())
+	}
+}
+
+// Profile + Spec are small test-only constructors that build
+// config.ProfileSpec values without the test file having to import
+// internal config types with verbose struct literals. Keeps the
+// fixture readable.
+type Spec = config.ProfileSpec
+
+func Profile(base config.ProfileSpec, extends string, _ []string, excludePaths []string) config.ProfileSpec {
+	out := base
+	if extends != "" {
+		out.Extends = extends
+	}
+	if len(excludePaths) > 0 {
+		if out.Exclude == nil {
+			out.Exclude = &config.ProfileExclude{}
+		}
+		out.Exclude.Paths = excludePaths
+	}
+	return out
+}
+
 // TestInspect_MCPServerRedactedSecretIsSynced pins the fix for
 // v0.8.1's report that gemini-embedding stayed stuck at "pending
 // push" even on a first-launch machine with no pending changes.
