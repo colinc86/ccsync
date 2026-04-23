@@ -113,8 +113,8 @@ type helpRow struct {
 }
 
 // renderHelpOverlay builds the help panel as a bordered lipgloss block.
-// The key column renders as inverse-video pills (theme.Keycap) so the
-// cheat sheet reads as a keyboard, not a printed manual. Section
+// The key column renders as bold accent-color glyphs (theme.Keycap) so
+// the cheat sheet reads as a keyboard, not a printed manual. Section
 // titles get a subtle separator rule on the same line so the eye
 // finds "navigation", "home", "sync preview", etc. without
 // over-crowding the layout.
@@ -132,7 +132,7 @@ func renderHelpOverlay() string {
 	for i, section := range helpOverlayContent {
 		sb.WriteString(theme.Secondary.Bold(true).Render(section.Title) + "\n")
 		for _, row := range section.Rows {
-			pill := theme.KeycapMuted.Render(row.Key)
+			pill := theme.Keycap.Render(row.Key)
 			pad := keyColWidth - lipgloss.Width(pill)
 			if pad < 1 {
 				pad = 1

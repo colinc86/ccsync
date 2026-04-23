@@ -179,7 +179,7 @@ func (m *conflictHunkResolverModel) View() string {
 			theme.Subtle.Render("press a to apply the merged file")
 		sb.WriteString(theme.CardClean.Width(56).Render(body) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "a", label: "apply merged file", primary: true},
+			{cap: "a", label: "apply merged file"},
 			{cap: "esc", label: "back"},
 		}))
 		return sb.String()
@@ -208,7 +208,7 @@ func (m *conflictHunkResolverModel) View() string {
 	sb.WriteString(renderHunkSide(hunk.Remote, theme.Good) + "\n")
 
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "l", label: "take local", primary: true},
+		{cap: "l", label: "take local"},
 		{cap: "r", label: "take remote"},
 		{cap: "esc", label: "back"},
 	}))

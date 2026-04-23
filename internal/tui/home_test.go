@@ -263,10 +263,10 @@ func TestCommandPaletteFilteringAndExecution(t *testing.T) {
 // with all their dependencies. Title() is all the header needs.
 type fakeScreen struct{ title string }
 
-func (f fakeScreen) Title() string                         { return f.title }
-func (f fakeScreen) Init() tea.Cmd                         { return nil }
+func (f fakeScreen) Title() string                       { return f.title }
+func (f fakeScreen) Init() tea.Cmd                       { return nil }
 func (f fakeScreen) Update(tea.Msg) (tea.Model, tea.Cmd) { return f, nil }
-func (f fakeScreen) View() string                          { return "" }
+func (f fakeScreen) View() string                        { return "" }
 
 // TestHomeDashboardBeforeBootstrapShowsHeroCard pins the no-repo
 // state: Home renders a neutral hero card and a footer bar with the

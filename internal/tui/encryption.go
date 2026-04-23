@@ -93,6 +93,12 @@ func (m *encryptionScreenModel) CapturesEscape() bool {
 	return m.step == encStepPrompt || m.step == encStepConfirm || m.running
 }
 
+// IsTerminal marks the result step as terminal — the migration has
+// committed and the user is reading the outcome card. Popping one
+// step would land them on Settings; popping to root is what the
+// "press any key to return" copy already promises.
+func (m *encryptionScreenModel) IsTerminal() bool { return m.step == encStepResult }
+
 func detectEncStatus(ctx *AppContext) encStatus {
 	if ctx == nil || ctx.RepoPath == "" {
 		return encOff
@@ -322,7 +328,7 @@ func (m *encryptionScreenModel) View() string {
 		sb.WriteString(theme.CardPending.Width(56).Render(body))
 	case encStepResult:
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "any key", label: "return", primary: true},
+			{cap: "any key", label: "return"},
 		}))
 	}
 	return sb.String()
@@ -364,19 +370,19 @@ func (m *encryptionScreenModel) renderChoose() string {
 			theme.Keycap.Render("e"),
 			theme.Primary.Render("enable encryption"),
 			theme.Hint.Render("prompts for a passphrase; re-encrypts every tracked file"))
-		keys = append(keys, footerKey{cap: "e", label: "enable", primary: true})
+		keys = append(keys, footerKey{cap: "e", label: "enable"})
 	case encOn:
 		fmt.Fprintf(&sb, "  %s  %s\n      %s\n\n",
 			theme.Keycap.Render("d"),
 			theme.Primary.Render("disable encryption"),
 			theme.Hint.Render("decrypts and recommits · plaintext after this"))
-		keys = append(keys, footerKey{cap: "d", label: "disable", primary: true})
+		keys = append(keys, footerKey{cap: "d", label: "disable"})
 	case encLocked:
 		fmt.Fprintf(&sb, "  %s  %s\n      %s\n\n",
 			theme.Keycap.Render("u"),
 			theme.Primary.Render("unlock"),
 			theme.Hint.Render("enter the passphrase set when encryption was enabled elsewhere"))
-		keys = append(keys, footerKey{cap: "u", label: "unlock", primary: true})
+		keys = append(keys, footerKey{cap: "u", label: "unlock"})
 	}
 	keys = append(keys, footerKey{cap: "esc", label: "back"})
 	sb.WriteString(renderFooterBar(keys))
@@ -401,7 +407,7 @@ func (m *encryptionScreenModel) renderPrompt() string {
 		sb.WriteString("\n  " + theme.Hint.Render(hint) + "\n")
 	}
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "enter", label: "confirm", primary: true},
+		{cap: "enter", label: "confirm"},
 		{cap: "esc", label: "back"},
 	}))
 	return sb.String()
@@ -420,7 +426,7 @@ func (m *encryptionScreenModel) renderConfirm() string {
 				"with read access to the remote.")
 	sb.WriteString(theme.CardConflict.Width(60).Render(body) + "\n\n")
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "y", label: "confirm disable", primary: true},
+		{cap: "y", label: "confirm disable"},
 		{cap: "esc", label: "back"},
 	}))
 	return sb.String()

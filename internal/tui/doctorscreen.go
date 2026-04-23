@@ -117,7 +117,7 @@ func (m *doctorScreenModel) View() string {
 		}
 	}
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "r", label: "re-run", primary: true},
+		{cap: "r", label: "re-run"},
 		{cap: "esc", label: "back"},
 	}))
 	return sb.String()

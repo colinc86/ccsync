@@ -13,25 +13,16 @@ var (
 	Hint      = lipgloss.NewStyle().Foreground(Muted).Italic(true)
 	Card      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Accent).Padding(0, 1)
 
-	// Keycap renders a key shortcut as a small inverse-video pill —
-	// `[enter]` → ` ENTER `-style. Use for primary actions in menus
-	// and the footer bar so keyboard verbs stand out without
-	// shouting. A rendered keycap is an inline block; the caller
-	// spaces it with a plain space on either side.
+	// Keycap renders a keyboard shortcut inline as a bold accent-color
+	// glyph — `enter` or `q` — with no background pill. Pairs with a
+	// muted-text label so the eye reads "bold letter = key, normal
+	// text = what it does" without the visual weight of an inverse-
+	// video block. Apply uniformly: every pressable key on a screen
+	// gets the same treatment so no one key looks more "themed" than
+	// the others.
 	Keycap = lipgloss.NewStyle().
-		Foreground(Cream).
-		Background(Accent).
-		Bold(true).
-		Padding(0, 1)
-
-	// KeycapMuted is the quieter variant for secondary shortcuts —
-	// single-letter help/quit/more keys in the footer bar. Keeps the
-	// same pill shape so the eye reads "these are all keys" but drops
-	// the loud accent fill so they don't compete with the primary.
-	KeycapMuted = lipgloss.NewStyle().
-			Foreground(Ink).
-			Background(Cream).
-			Padding(0, 1)
+		Foreground(Accent).
+		Bold(true)
 
 	// Wordmark is the top-of-screen "ccsync" identity block. Bolded
 	// accent on its own line with a subtle underline rule — reads as

@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/colinc86/ccsync/internal/humanize"
 	"github.com/colinc86/ccsync/internal/merge"
 	"github.com/colinc86/ccsync/internal/sync"
 	"github.com/colinc86/ccsync/internal/theme"
@@ -141,8 +142,8 @@ func (m *conflictKeyResolverModel) View() string {
 		sb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, mark, pathDisp))
 
 		if m.cursor == i {
-			localDisp := truncate(c.Local, 60)
-			remoteDisp := truncate(c.Remote, 60)
+			localDisp := humanize.Truncate(c.Local, 60)
+			remoteDisp := humanize.Truncate(c.Remote, 60)
 			if !c.LocalPresent {
 				localDisp = theme.Hint.Render("(absent — local deleted)")
 			}
@@ -159,18 +160,11 @@ func (m *conflictKeyResolverModel) View() string {
 	}
 
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "a", label: "accept", primary: true},
+		{cap: "a", label: "accept"},
 		{cap: "l", label: "local"},
 		{cap: "r", label: "remote"},
 		{cap: "↑↓", label: "move"},
 		{cap: "esc", label: "cancel"},
 	}))
 	return sb.String()
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "…"
 }

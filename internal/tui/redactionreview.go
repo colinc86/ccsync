@@ -135,12 +135,12 @@ func (m *redactionReviewModel) View() string {
 		sb.WriteString(theme.Secondary.Render("value: "))
 		sb.WriteString(m.input.View() + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "enter", label: "save", primary: true},
+			{cap: "enter", label: "save"},
 			{cap: "esc", label: "cancel"},
 		}))
 	} else {
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "enter", label: "type value", primary: true},
+			{cap: "enter", label: "type value"},
 			{cap: "↑↓", label: "move"},
 		}))
 	}

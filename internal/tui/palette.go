@@ -218,7 +218,7 @@ func renderPalette(m *paletteModel) string {
 			if c.shortcut == "" {
 				continue
 			}
-			w := lipgloss.Width(theme.KeycapMuted.Render(c.shortcut))
+			w := lipgloss.Width(theme.Keycap.Render(c.shortcut))
 			if w > keyColWidth {
 				keyColWidth = w
 			}
@@ -231,7 +231,7 @@ func renderPalette(m *paletteModel) string {
 			}
 			var keycap string
 			if c.shortcut != "" {
-				keycap = theme.KeycapMuted.Render(c.shortcut)
+				keycap = theme.Keycap.Render(c.shortcut)
 				gap := keyColWidth - lipgloss.Width(keycap)
 				if gap < 0 {
 					gap = 0
@@ -270,16 +270,17 @@ func allPaletteCommands() []paletteCommand {
 	}
 	return []paletteCommand{
 		{
-			label: "Inspect profile", keywords: "inspect what syncing things inventory skills commands agents mcp view",
-			hint: "see what's in this profile — skills, commands, subagents, MCP servers",
+			label: "What's syncing", keywords: "inspect what syncing things inventory skills commands agents mcp browse tracked files exclude syncignore",
+			hint: "every synced thing — skills, commands, agents, MCP servers; toggle excludes inline",
 			action: func(c *AppContext) tea.Cmd {
 				return switchTo(newProfileInspect(c))
 			},
 			available: bootstrapped,
-			// Strong context boost on bootstrapped accounts — the
-			// inspector is the new default discovery surface. Ranks
-			// below hard-forcing commands (Resolve = 100, Unlock = 95)
-			// so those still win during conflict or lock state.
+			// Strong context boost on bootstrapped accounts — this
+			// is the default discovery surface and also where users
+			// go to manage excludes. Ranks below hard-forcing
+			// commands (Resolve = 100, Unlock = 95) so those still
+			// win during conflict or lock state.
 			contextScore: func(c *AppContext) int { return 70 },
 		},
 		{
@@ -351,14 +352,6 @@ func allPaletteCommands() []paletteCommand {
 			action: func(c *AppContext) tea.Cmd {
 				return switchTo(newSyncHistory(c))
 			},
-		},
-		{
-			label: "Browse tracked files", keywords: "browse files tracked list", shortcut: "b",
-			hint: "inspect every synced path; exclude, promote, or trace rules",
-			action: func(c *AppContext) tea.Cmd {
-				return switchTo(newBrowseTracked(c))
-			},
-			available: bootstrapped,
 		},
 		{
 			label: "Profiles", keywords: "profile switch create delete edit", shortcut: "p",

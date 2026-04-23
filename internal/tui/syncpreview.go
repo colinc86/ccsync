@@ -359,7 +359,7 @@ func (m *syncPreviewModel) View() string {
 	}
 
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "enter", label: "apply all", primary: true},
+		{cap: "enter", label: "apply all"},
 		{cap: "p", label: "pull only"},
 		{cap: "u", label: "push only"},
 		{cap: "d", label: "diff"},

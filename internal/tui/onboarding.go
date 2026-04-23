@@ -194,7 +194,7 @@ func (m *onboardingModel) renderPolicy() string {
 		"fully hands-on — every direction surfaces a review screen")
 
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "1-3", label: "choose", primary: true},
+		{cap: "1-3", label: "choose"},
 		{cap: "enter", label: "1 (auto)"},
 		{cap: "s", label: "skip"},
 	}))
@@ -222,7 +222,7 @@ func (m *onboardingModel) renderWelcome() string {
 	sb.WriteString(theme.Card.Width(60).Render(card.String()) + "\n\n")
 
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "enter", label: "start", primary: true},
+		{cap: "enter", label: "start"},
 		{cap: "s", label: "skip (set up later)"},
 	}))
 	return sb.String()
@@ -249,7 +249,7 @@ func (m *onboardingModel) renderDone() string {
 	}
 	sb.WriteString(card.Width(56).Render(body) + "\n\n")
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "any key", label: "continue", primary: true},
+		{cap: "any key", label: "continue"},
 	}))
 	return sb.String()
 }

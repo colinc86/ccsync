@@ -205,6 +205,17 @@ type escapeCapturer interface {
 	CapturesEscape() bool
 }
 
+// terminalScreen is an optional capability for screens whose "back one
+// step" destination is a now-invalid view — a consumed dry-run plan, a
+// post-sync preview that no longer reflects disk state, a completed
+// wizard. When IsTerminal() returns true, ESC pops the entire stack
+// back to Home instead of popping a single layer. Screens return true
+// only when their work is complete; intermediate states still fall
+// through to the default pop-one behaviour.
+type terminalScreen interface {
+	IsTerminal() bool
+}
+
 // AppModel is the root Bubble Tea model.
 type AppModel struct {
 	ctx     *AppContext
@@ -336,11 +347,21 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.help = true
 			return m, nil
 		case "esc":
-			// If the top screen captures escape (e.g. Settings while editing
-			// a field), let it consume the key instead of popping the stack.
+			// Three-way fan-out:
+			//   1. Screen owns esc (modal sub-state) — pass through so the
+			//      screen's Update can cancel/back within itself.
+			//   2. Screen is terminal (work complete, prior stack is
+			//      stale) — pop all the way to Home so "back one step"
+			//      doesn't land on a dead dry-run view.
+			//   3. Default — pop a single screen.
 			if len(m.screens) > 0 {
-				if cap, ok := m.screens[len(m.screens)-1].(escapeCapturer); ok && cap.CapturesEscape() {
+				top := m.screens[len(m.screens)-1]
+				if cap, ok := top.(escapeCapturer); ok && cap.CapturesEscape() {
 					break
+				}
+				if term, ok := top.(terminalScreen); ok && term.IsTerminal() && len(m.screens) > 1 {
+					m.screens = m.screens[:1]
+					return m, nil
 				}
 			}
 			if len(m.screens) > 1 {

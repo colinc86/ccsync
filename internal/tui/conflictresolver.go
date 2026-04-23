@@ -71,6 +71,12 @@ func (m *conflictResolverModel) Title() string {
 }
 func (m *conflictResolverModel) Init() tea.Cmd { return nil }
 
+// IsTerminal returns true once the user has resolved every conflict
+// and the push has landed — at that point backing up one step would
+// drop the user on a stale SyncPreview whose conflicts no longer exist,
+// so ESC should flush the stack all the way to Home.
+func (m *conflictResolverModel) IsTerminal() bool { return m.result != nil }
+
 type applyResolutionsDoneMsg struct {
 	result sync.Result
 	err    error
@@ -224,7 +230,7 @@ func (m *conflictResolverModel) renderStrategy() string {
 		"detailed picker: per-key JSON conflicts, per-hunk text merges")
 
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "1-3", label: "choose", primary: true},
+		{cap: "1-3", label: "choose"},
 		{cap: "esc", label: "cancel"},
 	}))
 	return sb.String()
@@ -333,7 +339,7 @@ func (m *conflictResolverModel) View() string {
 			"%s reconciled and pushed to the remote", humanize.Count(len(m.conflicts), "conflict"))))
 		sb.WriteString(theme.CardClean.Width(56).Render(body.String()) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "any key", label: "return to home", primary: true},
+			{cap: "any key", label: "return to home"},
 		}))
 		return sb.String()
 	}
@@ -380,10 +386,10 @@ func (m *conflictResolverModel) View() string {
 	sb.WriteString("\n")
 	keys := []footerKey{}
 	if m.allResolved() {
-		keys = append(keys, footerKey{cap: "a", label: "apply all", primary: true})
+		keys = append(keys, footerKey{cap: "a", label: "apply all"})
 	}
 	keys = append(keys,
-		footerKey{cap: "l", label: "local", primary: !m.allResolved()},
+		footerKey{cap: "l", label: "local"},
 		footerKey{cap: "r", label: "remote"},
 		footerKey{cap: "enter", label: "drill in"},
 		footerKey{cap: "d", label: "diff"},

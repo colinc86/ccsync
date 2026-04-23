@@ -127,7 +127,7 @@ func (m *suggestionsModel) View() string {
 		// Pattern as a keycap-pill so the suggested rule reads as
 		// something the user can picture adopting verbatim.
 		fmt.Fprintf(&sb, "%s%s  %s\n", cursor,
-			theme.KeycapMuted.Render(s.Pattern),
+			theme.Keycap.Render(s.Pattern),
 			theme.Hint.Render("— "+s.Reason))
 		for j, p := range s.Paths {
 			if j >= 3 {
@@ -139,7 +139,7 @@ func (m *suggestionsModel) View() string {
 	}
 
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "enter", label: "accept", primary: true},
+		{cap: "enter", label: "accept"},
 		{cap: "x", label: "dismiss forever"},
 		{cap: "↑↓", label: "move"},
 	}))

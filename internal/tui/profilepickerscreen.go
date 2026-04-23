@@ -270,7 +270,7 @@ func (m *profilePickerModel) View() string {
 				"already in the repo. Tweak later from Home → more → Profiles.") + "\n\n")
 		fmt.Fprintf(&sb, "  %s  %s\n\n", theme.Secondary.Render("name:"), m.nameInput.View())
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "enter", label: "create", primary: true},
+			{cap: "enter", label: "create"},
 			{cap: "esc", label: "back to picker"},
 		}))
 		return sb.String()
@@ -290,7 +290,7 @@ func (m *profilePickerModel) View() string {
 		if spec, ok := m.ctx.Config.Profiles[name]; ok && spec.Description != "" {
 			desc = "  " + theme.Hint.Render("— "+spec.Description)
 		}
-		num := theme.KeycapMuted.Render(fmt.Sprintf("%d", i+1))
+		num := theme.Keycap.Render(fmt.Sprintf("%d", i+1))
 		fmt.Fprintf(&sb, "%s%s  %s%s\n", cursor, num, name, desc)
 	}
 	sb.WriteString("\n")
@@ -298,7 +298,7 @@ func (m *profilePickerModel) View() string {
 		theme.Keycap.Render("n"),
 		theme.Primary.Render("create a new profile for this machine"))
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "enter", label: "pick cursored", primary: true},
+		{cap: "enter", label: "pick cursored"},
 		{cap: "1-9", label: "pick by number"},
 		{cap: "n", label: "new"},
 		{cap: "↑↓", label: "move"},

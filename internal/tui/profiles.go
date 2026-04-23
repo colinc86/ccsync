@@ -553,7 +553,7 @@ func (m *profilesModel) View() string {
 		}
 	}
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "enter", label: "switch", primary: true},
+		{cap: "enter", label: "switch"},
 		{cap: "n", label: "new"},
 		{cap: "e", label: "edit"},
 		{cap: "d", label: "delete"},
@@ -608,7 +608,7 @@ func (m *profilesModel) renderConfirmDelete() string {
 				"will end up with a broken chain — consider renaming instead")
 	sb.WriteString(theme.CardConflict.Width(60).Render(body) + "\n\n")
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "y", label: "confirm delete", primary: true},
+		{cap: "y", label: "confirm delete"},
 		{cap: "n", label: "cancel"},
 		{cap: "esc", label: "cancel"},
 	}))

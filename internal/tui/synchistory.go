@@ -223,7 +223,7 @@ func (m *syncHistoryModel) View() string {
 		}
 		sb.WriteString(renderActivityCalendar(logs))
 		sb.WriteString("\n\n" + renderFooterBar([]footerKey{
-			{cap: "v", label: "list view", primary: true},
+			{cap: "v", label: "list view"},
 			{cap: "esc", label: "back"},
 		}))
 		return sb.String()
@@ -299,7 +299,7 @@ func (m *syncHistoryModel) View() string {
 	}
 
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "b", label: "rollback", primary: true},
+		{cap: "b", label: "rollback"},
 		{cap: "/", label: "filter"},
 		{cap: "v", label: "calendar"},
 		{cap: "↑↓", label: "move"},

@@ -133,7 +133,7 @@ func (m *policiesScreenModel) View() string {
 		sb.WriteString("\n" + theme.Bad.Render("save failed: "+gitx.Friendly(m.err)))
 	}
 	sb.WriteString("\n" + renderFooterBar([]footerKey{
-		{cap: "enter", label: "cycle policy", primary: true},
+		{cap: "enter", label: "cycle policy"},
 		{cap: "space", label: "cycle"},
 		{cap: "↑↓", label: "row"},
 		{cap: "←→", label: "column"},

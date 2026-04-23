@@ -81,15 +81,9 @@ func (m *homeModel) rebuildMoreItems() {
 	items := []homeChoice{
 		{
 			key:     "i",
-			label:   "What's syncing (inspect profile)",
+			label:   "What's syncing",
 			enabled: bootstrapped,
 			onEnter: func() tea.Cmd { return switchTo(newProfileInspect(m.ctx)) },
-		},
-		{
-			key:     "b",
-			label:   "Browse tracked files",
-			enabled: bootstrapped,
-			onEnter: func() tea.Cmd { return switchTo(newBrowseTracked(m.ctx)) },
 		},
 		{
 			key:     "h",
@@ -198,7 +192,10 @@ func (m homeModel) updateMore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.moreCursor < len(m.moreItems) {
 			c := m.moreItems[m.moreCursor]
 			if c.enabled {
-				m.showMore = false
+				// Leave showMore=true so when the user hits esc from the
+				// sub-screen they land back on the drawer, not naked Home.
+				// The drawer is dismissible with another esc/m once they're
+				// actually done with the "more" flow.
 				return m, c.onEnter()
 			}
 		}
@@ -209,7 +206,9 @@ func (m homeModel) updateMore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if len(s) == 1 {
 		for _, item := range m.moreItems {
 			if item.key == s && item.enabled {
-				m.showMore = false
+				// Same rationale as the enter branch: preserve the drawer
+				// so esc-back restores the navigation context the user
+				// actually came from.
 				return m, item.onEnter()
 			}
 		}
@@ -245,7 +244,7 @@ func (m homeModel) renderDashboard() string {
 			state:   heroNeutral,
 		}) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "enter", label: "start setup", primary: true},
+			{cap: "enter", label: "start setup"},
 			{cap: "?", label: "help"},
 			{cap: "q", label: "quit"},
 		}))
@@ -284,7 +283,7 @@ func (m homeModel) renderDashboard() string {
 	// highlighted; secondary actions as muted chips. Replaces the old
 	// "[enter] sync now / [m] more" wall of brackets.
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "enter", label: m.primaryLabel(), primary: true},
+		{cap: "enter", label: m.primaryLabel()},
 		{cap: "m", label: "more"},
 		{cap: "r", label: "re-check"},
 		{cap: "?", label: "help"},
@@ -336,7 +335,7 @@ func heroFromSummary(s SyncSummary, ctx *AppContext, profile string) heroSpec {
 	case s.Conflicts > 0:
 		return heroSpec{
 			glyph: "!", title: fmt.Sprintf("%d CONFLICT", s.Conflicts),
-			state: heroConflict,
+			state:   heroConflict,
 			subtext: heroFreshnessLine(ctx, profile),
 		}
 	case s.Clean():
@@ -432,29 +431,22 @@ func renderHeroCard(h heroSpec) string {
 	return card.Width(56).Render(sb.String())
 }
 
-// footerKey describes one key in the persistent shortcut bar. primary
-// keys get the filled accent keycap (Keycap); others get the muted
-// variant (KeycapMuted).
+// footerKey describes one key in the persistent shortcut bar. Every
+// key renders identically — bold accent glyph + muted label — so no
+// one key looks more "themed" than the rest.
 type footerKey struct {
-	cap     string
-	label   string
-	primary bool
+	cap   string
+	label string
 }
 
-// renderFooterBar renders the bottom-of-screen shortcut row. Keycaps
-// pill-style, labels in muted text. Keys join with a thin dot
-// separator so the row reads as one continuous legend, not a
-// cluttered list.
+// renderFooterBar renders the bottom-of-screen shortcut row. Keys
+// render as bold accent-color glyphs followed by their muted-text
+// label; entries join with a thin dot separator so the row reads as
+// one continuous legend, not a cluttered list.
 func renderFooterBar(keys []footerKey) string {
 	var parts []string
 	for _, k := range keys {
-		var cap string
-		if k.primary {
-			cap = theme.Keycap.Render(k.cap)
-		} else {
-			cap = theme.KeycapMuted.Render(k.cap)
-		}
-		parts = append(parts, cap+" "+theme.Hint.Render(k.label))
+		parts = append(parts, theme.Keycap.Render(k.cap)+" "+theme.Hint.Render(k.label))
 	}
 	return strings.Join(parts, theme.Rule.Render("  ·  "))
 }

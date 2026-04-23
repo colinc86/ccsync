@@ -60,6 +60,13 @@ func newSync(ctx *AppContext) *syncModel {
 	return &syncModel{ctx: ctx, spin: newSpinner()}
 }
 
+// IsTerminal marks the sync screen as terminal once the run finishes.
+// Backing up one step would land on a dry-run SyncPreview whose plan
+// the completed sync just invalidated; ESC should drop straight to
+// Home instead. While the sync is still in flight, this returns false
+// so ESC preserves the stack (the user's aborting, not returning).
+func (m *syncModel) IsTerminal() bool { return m.done }
+
 // newSyncWithPromotes builds a syncModel that runs the usual sync and
 // then promotes each of the named paths from source → dest profile.
 // Used by the review screen to queue "share this file with other
@@ -259,7 +266,7 @@ func (m *syncModel) View() string {
 	if m.err != nil {
 		sb.WriteString(renderError(m.err) + "\n")
 		sb.WriteString("\n" + renderFooterBar([]footerKey{
-			{cap: "any key", label: "return", primary: true},
+			{cap: "any key", label: "return"},
 		}))
 		return sb.String()
 	}
@@ -272,10 +279,10 @@ func (m *syncModel) View() string {
 		sb.WriteString(renderSyncResultCard(r) + "\n")
 		var chips []footerKey
 		if len(r.Plan.Conflicts) > 0 {
-			chips = append(chips, footerKey{cap: "r", label: "resolve conflicts", primary: true})
+			chips = append(chips, footerKey{cap: "r", label: "resolve conflicts"})
 		}
 		if len(r.MissingSecrets) > 0 {
-			chips = append(chips, footerKey{cap: "v", label: "fill missing secrets", primary: len(chips) == 0})
+			chips = append(chips, footerKey{cap: "v", label: "fill missing secrets"})
 		}
 		chips = append(chips, footerKey{cap: "any key", label: "return"})
 		sb.WriteString("\n" + renderFooterBar(chips))
@@ -456,4 +463,3 @@ func recapPhrase(verb string, items []string) string {
 	}
 	return fmt.Sprintf("%s %d (%s)", verb, len(items), tail)
 }
-

@@ -674,12 +674,12 @@ func (m *settingsModel) View() string {
 		cur := m.rows[m.cursor]
 		sb.WriteString("\n" + theme.Primary.Render(cur.label+": ") + m.input.View() + "\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "enter", label: "save", primary: true},
+			{cap: "enter", label: "save"},
 			{cap: "esc", label: "cancel"},
 		}))
 	} else {
 		sb.WriteString("\n" + renderFooterBar([]footerKey{
-			{cap: "enter", label: "edit/toggle", primary: true},
+			{cap: "enter", label: "edit/toggle"},
 			{cap: "↑↓", label: "move"},
 			{cap: "esc", label: "back"},
 		}))

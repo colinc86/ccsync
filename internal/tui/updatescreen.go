@@ -75,6 +75,16 @@ func (m *updateScreenModel) CapturesEscape() bool {
 	return m.step == updateStepChecking || m.step == updateStepInstalling
 }
 
+// IsTerminal marks the post-install / up-to-date / done states as
+// terminal — the "press any key to return" copy already says the
+// next hop is Home, so ESC should honour that instead of dropping
+// back to Settings one step at a time.
+func (m *updateScreenModel) IsTerminal() bool {
+	return m.step == updateStepUpToDate ||
+		m.step == updateStepHomebrew ||
+		m.step == updateStepDone
+}
+
 func checkLatestCmd() tea.Cmd {
 	return func() tea.Msg {
 		tag, err := updater.LatestTag()
@@ -177,21 +187,21 @@ func (m *updateScreenModel) View() string {
 			theme.Hint.Render("you're on the newest release")
 		sb.WriteString(theme.CardClean.Width(56).Render(body) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "any key", label: "return", primary: true},
+			{cap: "any key", label: "return"},
 		}))
 	case updateStepHomebrew:
 		body := theme.Warn.Bold(true).Render("↗ HOMEBREW INSTALL") + "\n" +
 			theme.Hint.Render("this binary was installed via Homebrew.\nrun: brew upgrade ccsync")
 		sb.WriteString(theme.CardPending.Width(56).Render(body) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "any key", label: "return", primary: true},
+			{cap: "any key", label: "return"},
 		}))
 	case updateStepOffer:
 		body := theme.Warn.Bold(true).Render(fmt.Sprintf("↗ UPDATE AVAILABLE  %s → %s", m.current, m.latest)) + "\n" +
 			theme.Hint.Render("downloads from GitHub, atomic-replaces this binary")
 		sb.WriteString(theme.CardPending.Width(60).Render(body) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "y", label: "install now", primary: true},
+			{cap: "y", label: "install now"},
 			{cap: "enter", label: "install"},
 			{cap: "n", label: "cancel"},
 			{cap: "esc", label: "cancel"},
@@ -200,7 +210,7 @@ func (m *updateScreenModel) View() string {
 		sb.WriteString(m.spin.View() + " " + theme.Hint.Render("downloading and replacing binary…"))
 	case updateStepDone:
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "any key", label: "return", primary: true},
+			{cap: "any key", label: "return"},
 		}))
 	}
 	return sb.String()

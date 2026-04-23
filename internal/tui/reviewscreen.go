@@ -332,7 +332,7 @@ func (m *reviewScreenModel) View() string {
 	}
 
 	sb.WriteString(renderFooterBar([]footerKey{
-		{cap: "enter", label: "apply", primary: true},
+		{cap: "enter", label: "apply"},
 		{cap: "space", label: "toggle"},
 		{cap: "p", label: "promote to default"},
 		{cap: "a", label: "allow all"},

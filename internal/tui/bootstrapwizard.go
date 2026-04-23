@@ -66,6 +66,12 @@ func newBootstrapWizard(ctx *AppContext) *bootstrapWizardModel {
 func (m *bootstrapWizardModel) Title() string { return "Bootstrap — first-run wizard" }
 func (m *bootstrapWizardModel) Init() tea.Cmd { return textinput.Blink }
 
+// IsTerminal marks the final step as terminal — the wizard has either
+// finished bootstrapping the repo or reported an error, and there's
+// no meaningful "back one step" destination (the earlier steps
+// already wrote state and can't be safely re-visited).
+func (m *bootstrapWizardModel) IsTerminal() bool { return m.step == stepDone }
+
 func (m *bootstrapWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
@@ -228,7 +234,7 @@ func (m *bootstrapWizardModel) View() string {
 			sb.WriteString(cursor + c + "\n")
 		}
 		sb.WriteString("\n" + renderFooterBar([]footerKey{
-			{cap: "enter", label: "select", primary: true},
+			{cap: "enter", label: "select"},
 			{cap: "↑↓", label: "move"},
 		}))
 
@@ -243,7 +249,7 @@ func (m *bootstrapWizardModel) View() string {
 		sb.WriteString(theme.Heading.Render(label) + "\n\n")
 		sb.WriteString("  " + m.urlInput.View() + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "enter", label: "next", primary: true},
+			{cap: "enter", label: "next"},
 			{cap: "esc", label: "back"},
 		}))
 
@@ -261,7 +267,7 @@ func (m *bootstrapWizardModel) View() string {
 			theme.Rule.Render("·"), theme.Hint.Render("auth"), theme.Secondary.Render("ssh (auto-detect ~/.ssh/id_*)"))
 		sb.WriteString(theme.CardNeutral.Width(60).Render(body.String()) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "enter", label: "apply", primary: true},
+			{cap: "enter", label: "apply"},
 			{cap: "b", label: "edit URL"},
 			{cap: "esc", label: "cancel"},
 		}))
@@ -272,7 +278,7 @@ func (m *bootstrapWizardModel) View() string {
 				theme.Subtle.Render(gitx.Friendly(m.err))
 			sb.WriteString(theme.CardConflict.Width(60).Render(body) + "\n\n")
 			sb.WriteString(renderFooterBar([]footerKey{
-				{cap: "any key", label: "return", primary: true},
+				{cap: "any key", label: "return"},
 			}))
 			return sb.String()
 		}
@@ -285,7 +291,7 @@ func (m *bootstrapWizardModel) View() string {
 		body.WriteString("\n" + theme.Hint.Render("nothing has synced yet — next step previews what would change"))
 		sb.WriteString(theme.CardClean.Width(60).Render(body.String()) + "\n\n")
 		sb.WriteString(renderFooterBar([]footerKey{
-			{cap: "any key", label: "continue", primary: true},
+			{cap: "any key", label: "continue"},
 		}))
 	}
 	return sb.String()
