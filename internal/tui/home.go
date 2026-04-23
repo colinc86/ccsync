@@ -179,14 +179,10 @@ func (m homeModel) updateMore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showMore = false
 		return m, nil
 	case "up", "k":
-		if m.moreCursor > 0 {
-			m.moreCursor--
-		}
+		m.moreCursor = wrapCursor(m.moreCursor, len(m.moreItems), -1)
 		return m, nil
 	case "down", "j":
-		if m.moreCursor < len(m.moreItems)-1 {
-			m.moreCursor++
-		}
+		m.moreCursor = wrapCursor(m.moreCursor, len(m.moreItems), +1)
 		return m, nil
 	case "enter":
 		if m.moreCursor < len(m.moreItems) {

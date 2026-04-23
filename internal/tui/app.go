@@ -73,6 +73,14 @@ type AppContext struct {
 	// handoff to avoid racing two real syncs when the refresh finishes
 	// while an earlier auto-sync is still in flight.
 	AutoSyncing bool
+
+	// RestartBinaryPath, when non-empty after the TUI exits, signals
+	// main() to syscall.Exec the named binary in place of the current
+	// process. Set by the Update screen after a successful self-
+	// install so the user lands on the freshly-written binary without
+	// manually relaunching. main() resolves the exec argv + env from
+	// the current process, so user-visible flags survive the swap.
+	RestartBinaryPath string
 }
 
 // ConfigPath returns the on-disk ccsync.yaml path. Before bootstrap, an
@@ -657,6 +665,19 @@ func renderBreadcrumbs(screens []screen) string {
 }
 
 // switchScreenMsg pushes a new screen on top of the stack.
+// wrapCursor shifts cur by delta and wraps it inside [0, n). Empty
+// lists (n <= 0) return the cursor unchanged so callers don't have
+// to guard against a mod-by-zero. Used by every list-backed screen
+// so up-at-top lands on the last row and down-at-bottom lands on
+// the first, matching the "feel" users expect from every other
+// terminal list.
+func wrapCursor(cur, n, delta int) int {
+	if n <= 0 {
+		return cur
+	}
+	return ((cur+delta)%n + n) % n
+}
+
 type switchScreenMsg struct{ s screen }
 
 func switchTo(s screen) tea.Cmd {

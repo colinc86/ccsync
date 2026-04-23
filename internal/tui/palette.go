@@ -107,14 +107,10 @@ func (m *paletteModel) Update(msg tea.Msg) (*paletteModel, tea.Cmd) {
 			cmd := m.commands[m.matches[m.cursor]].action(m.ctx)
 			return m, tea.Batch(closePalette(), cmd)
 		case "up", "ctrl+p":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.matches), -1)
 			return m, nil
 		case "down", "ctrl+n":
-			if m.cursor < len(m.matches)-1 {
-				m.cursor++
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.matches), +1)
 			return m, nil
 		}
 	}

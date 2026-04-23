@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,7 +37,7 @@ import (
 // automatically. Local builds (go build, make build) fall back to
 // the hardcoded value committed in this file. Declared var, not
 // const — the Go linker can only override variables.
-var version = "0.8.2"
+var version = "0.8.3"
 
 func init() {
 	updater.SetCurrentVersion(version)
@@ -91,6 +92,25 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ccsync:", err)
 		os.Exit(1)
+	}
+	// If the Update screen asked for a hot-swap into the freshly-
+	// installed binary, do it now. By the time Run() returns,
+	// bubbletea has restored the terminal to cooked mode, so the
+	// re-exec's TUI starts clean. syscall.Exec replaces the current
+	// process image, so we never return past it; control flow ends
+	// here for the update-then-restart flow.
+	if ctx.RestartBinaryPath != "" {
+		env := os.Environ()
+		// argv[0] is conventionally the program path. Preserve the
+		// user's original os.Args so any invocation flags they
+		// started with survive the restart (ccsync runs without
+		// args 99% of the time, so this is belt-and-braces).
+		argv := append([]string{ctx.RestartBinaryPath}, os.Args[1:]...)
+		if err := syscall.Exec(ctx.RestartBinaryPath, argv, env); err != nil {
+			fmt.Fprintln(os.Stderr, "ccsync: auto-restart failed:", err)
+			fmt.Fprintln(os.Stderr, "ccsync: relaunch manually to pick up the new version")
+			os.Exit(1)
+		}
 	}
 }
 

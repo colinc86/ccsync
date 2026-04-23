@@ -210,12 +210,13 @@ func (m *profileInspectModel) clampCursor() {
 	m.cursor = -1
 }
 
-// nudgeCursor moves to the next/prev visible non-header row. Header
-// rows are invisible to the cursor so ↑↓ feels linear across the
-// whole list regardless of group boundaries. nudge(0) is a
-// normalise-only call: if the cursor is currently out of range or
-// parked on a header (e.g. on first entry to the screen), it snaps
-// to the first selectable row without moving past it.
+// nudgeCursor moves to the next/prev visible non-header row with
+// wrap-around at the top and bottom. Header rows are invisible to
+// the cursor, so ↑↓ feels linear across section boundaries; after
+// wrap, the next header also gets skipped. nudge(0) is a
+// normalise-only call: if the cursor is out of range or resting on
+// a header (e.g. first entry to the screen), it snaps to the first
+// selectable row without moving past it.
 func (m *profileInspectModel) nudgeCursor(delta int) {
 	m.ensureVisible()
 	if len(m.visible) == 0 {
@@ -240,14 +241,21 @@ func (m *profileInspectModel) nudgeCursor(delta int) {
 		}
 		return
 	}
-	target := pos + delta
-	for target >= 0 && target < len(m.visible) && m.flat[m.visible[target]].Header {
-		target += delta
-	}
-	if target < 0 || target >= len(m.visible) {
+	if delta == 0 {
 		return
 	}
-	m.cursor = m.visible[target]
+	// Wrap-aware walk: step at most len(visible) positions to find
+	// the next non-header, circling around at the bounds. Bounded
+	// loop count means we can't infinite-loop even when every
+	// visible row is a header (shouldn't happen post-filter).
+	target := pos
+	for step := 0; step < len(m.visible); step++ {
+		target = wrapCursor(target, len(m.visible), delta)
+		if !m.flat[m.visible[target]].Header {
+			m.cursor = m.visible[target]
+			return
+		}
+	}
 }
 
 // ensureVisible lazily populates m.visible the first time it's

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -38,7 +39,19 @@ const (
 	updateStepHomebrew // installed via brew — defer to brew upgrade
 	updateStepInstalling
 	updateStepDone
+	updateStepRestarting // post-install, brief hold then tea.Quit + re-exec
 )
+
+// restartDelay is the window the user sees the "updated" card before
+// the TUI quits and main() re-execs the fresh binary. Short enough
+// that auto-restart feels snappy, long enough that the success
+// message actually registers visually.
+const restartDelay = 900 * time.Millisecond
+
+// restartTickMsg fires after restartDelay elapses on the Done step
+// to trigger the tea.Quit that hands control back to main() for
+// the syscall.Exec into the new binary.
+type restartTickMsg struct{}
 
 type updateScreenCheckMsg struct {
 	latest string
@@ -78,7 +91,10 @@ func (m *updateScreenModel) CapturesEscape() bool {
 // IsTerminal marks the post-install / up-to-date / done states as
 // terminal — the "press any key to return" copy already says the
 // next hop is Home, so ESC should honour that instead of dropping
-// back to Settings one step at a time.
+// back to Settings one step at a time. Restarting is NOT terminal
+// because the tea.Tick in flight will drive the quit itself; if a
+// user mashed ESC mid-restart we'd drop them to Home on a binary
+// that's about to re-exec, which is momentarily confusing.
 func (m *updateScreenModel) IsTerminal() bool {
 	return m.step == updateStepUpToDate ||
 		m.step == updateStepHomebrew ||
@@ -132,9 +148,22 @@ func (m *updateScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		if msg.err == nil {
 			m.message = fmt.Sprintf("updated: %s → %s", m.current, m.latest)
+			// Stage the restart: tell main() which binary to exec
+			// after the TUI shuts down, then schedule the tick
+			// that triggers the shutdown. A brief hold on the
+			// success card first so the user sees confirmation
+			// before the screen clears.
+			m.ctx.RestartBinaryPath = m.exePath
+			m.step = updateStepRestarting
+			return m, tea.Tick(restartDelay, func(time.Time) tea.Msg { return restartTickMsg{} })
 		}
 		m.step = updateStepDone
 		return m, nil
+
+	case restartTickMsg:
+		// tea.Quit returns control to main.main; it checks
+		// ctx.RestartBinaryPath and re-execs the new binary there.
+		return m, tea.Quit
 
 	case tea.KeyMsg:
 		switch m.step {
@@ -149,6 +178,10 @@ func (m *updateScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case updateStepUpToDate, updateStepHomebrew, updateStepDone:
 			// Terminal "press any key to return" states — go to Home.
 			return m, popToRoot()
+		case updateStepRestarting:
+			// Ignore input mid-restart. The tea.Tick is imminent
+			// and any re-routing would just race it.
+			return m, nil
 		}
 	}
 	return m, nil
@@ -208,6 +241,13 @@ func (m *updateScreenModel) View() string {
 		}))
 	case updateStepInstalling:
 		sb.WriteString(m.spin.View() + " " + theme.Hint.Render("downloading and replacing binary…"))
+	case updateStepRestarting:
+		// Explicit "restarting..." card so the user understands
+		// why the TUI is about to flash — otherwise an immediate
+		// self-exec looks like a crash.
+		body := theme.Good.Bold(true).Render("✓ UPDATED") + "\n" +
+			theme.Hint.Render("restarting with the new binary…")
+		sb.WriteString(theme.CardClean.Width(56).Render(body))
 	case updateStepDone:
 		sb.WriteString(renderFooterBar([]footerKey{
 			{cap: "any key", label: "return"},

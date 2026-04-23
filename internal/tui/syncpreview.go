@@ -178,13 +178,9 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, switchTo(newSync(m.ctx))
 			}
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.visible), -1)
 		case "down", "j":
-			if m.cursor < len(m.visible)-1 {
-				m.cursor++
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.visible), +1)
 		case "d":
 			if len(m.visible) == 0 {
 				return m, nil

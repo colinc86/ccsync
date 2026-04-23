@@ -134,13 +134,9 @@ func (m *bootstrapWizardModel) sourceChoices() []string {
 func (m *bootstrapWizardModel) updateSource(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		if m.sourceCursor > 0 {
-			m.sourceCursor--
-		}
+		m.sourceCursor = wrapCursor(m.sourceCursor, len(m.sourceChoices()), -1)
 	case "down", "j":
-		if m.sourceCursor < 2 {
-			m.sourceCursor++
-		}
+		m.sourceCursor = wrapCursor(m.sourceCursor, len(m.sourceChoices()), +1)
 	case "enter":
 		switch m.sourceCursor {
 		case 0:

@@ -623,14 +623,18 @@ func (m *settingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// moveCursor moves the cursor by delta, skipping past heading rows.
+// moveCursor moves the cursor by delta, skipping past heading rows
+// and wrapping at the top/bottom so up-at-top lands on the last
+// selectable row and down-at-bottom lands on the first. Bounded
+// loop count prevents an infinite walk when every row is a heading
+// (shouldn't happen in practice, but guards anyway).
 func (m *settingsModel) moveCursor(delta int) {
+	if len(m.rows) == 0 {
+		return
+	}
 	i := m.cursor
-	for {
-		i += delta
-		if i < 0 || i >= len(m.rows) {
-			return
-		}
+	for step := 0; step < len(m.rows); step++ {
+		i = wrapCursor(i, len(m.rows), delta)
 		if !isHeading(m.rows[i]) {
 			m.cursor = i
 			return

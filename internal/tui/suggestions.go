@@ -44,13 +44,9 @@ func (m *suggestionsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = wrapCursor(m.cursor, len(items), -1)
 		case "down", "j":
-			if m.cursor < len(items)-1 {
-				m.cursor++
-			}
+			m.cursor = wrapCursor(m.cursor, len(items), +1)
 		case "enter":
 			if len(items) == 0 {
 				return m, nil

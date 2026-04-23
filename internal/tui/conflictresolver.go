@@ -126,13 +126,9 @@ func (m *conflictResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.conflicts), -1)
 		case "down", "j":
-			if m.cursor < len(m.conflicts)-1 {
-				m.cursor++
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.conflicts), +1)
 		case "l":
 			if len(m.conflicts) > 0 {
 				m.choices[m.cursor] = choiceLocal

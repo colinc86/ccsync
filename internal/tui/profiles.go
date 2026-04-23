@@ -110,14 +110,10 @@ func (m *profilesModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *profilesModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-		}
+		m.cursor = wrapCursor(m.cursor, len(m.profiles), -1)
 		m.message = ""
 	case "down", "j":
-		if m.cursor < len(m.profiles)-1 {
-			m.cursor++
-		}
+		m.cursor = wrapCursor(m.cursor, len(m.profiles), +1)
 		m.message = ""
 	case "n":
 		m.mode = modeCreateName

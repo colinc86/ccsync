@@ -161,13 +161,9 @@ func (m *profilePickerModel) updatePicking(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	key := msg.String()
 	switch key {
 	case "up", "k":
-		if m.cur > 0 {
-			m.cur--
-		}
+		m.cur = wrapCursor(m.cur, len(m.names), -1)
 	case "down", "j":
-		if m.cur < len(m.names)-1 {
-			m.cur++
-		}
+		m.cur = wrapCursor(m.cur, len(m.names), +1)
 	case "enter":
 		if len(m.names) == 0 {
 			return m, nil

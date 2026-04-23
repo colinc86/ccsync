@@ -42,18 +42,23 @@ type ignoreOption struct {
 
 // nextEnabled / prevEnabled advance the ignore-picker cursor while
 // skipping disabled rows, so the selector never rests on an option
-// the user can't pick.
+// the user can't pick. Wraps around at the bounds: down-at-bottom
+// returns the first enabled option, up-at-top returns the last.
 func nextEnabled(opts []ignoreOption, cur int) int {
-	for i := cur + 1; i < len(opts); i++ {
-		if opts[i].enabled {
-			return i
-		}
-	}
-	return cur
+	return wrapToEnabled(opts, cur, +1)
 }
 
 func prevEnabled(opts []ignoreOption, cur int) int {
-	for i := cur - 1; i >= 0; i-- {
+	return wrapToEnabled(opts, cur, -1)
+}
+
+func wrapToEnabled(opts []ignoreOption, cur, delta int) int {
+	if len(opts) == 0 {
+		return cur
+	}
+	i := cur
+	for step := 0; step < len(opts); step++ {
+		i = wrapCursor(i, len(opts), delta)
 		if opts[i].enabled {
 			return i
 		}

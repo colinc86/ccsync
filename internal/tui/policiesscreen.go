@@ -39,13 +39,9 @@ func (m *policiesScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
-			if m.row > 0 {
-				m.row--
-			}
+			m.row = wrapCursor(m.row, len(cats), -1)
 		case "down", "j":
-			if m.row < len(cats)-1 {
-				m.row++
-			}
+			m.row = wrapCursor(m.row, len(cats), +1)
 		case "left", "h":
 			if m.col > 0 {
 				m.col--

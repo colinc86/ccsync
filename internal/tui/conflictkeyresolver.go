@@ -58,13 +58,9 @@ func (m *conflictKeyResolverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.conflict), -1)
 		case "down", "j":
-			if m.cursor < len(m.conflict)-1 {
-				m.cursor++
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.conflict), +1)
 		case "l":
 			if len(m.conflict) > 0 {
 				m.choices[m.cursor] = sync.KeyLocal

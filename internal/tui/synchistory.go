@@ -153,13 +153,9 @@ func (m *syncHistoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.calendarView = !m.calendarView
 			return m, nil
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.filtered), -1)
 		case "down", "j":
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-			}
+			m.cursor = wrapCursor(m.cursor, len(m.filtered), +1)
 		case "b":
 			if len(m.filtered) == 0 {
 				return m, nil
