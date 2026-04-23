@@ -36,7 +36,7 @@ import (
 // automatically. Local builds (go build, make build) fall back to
 // the hardcoded value committed in this file. Declared var, not
 // const — the Go linker can only override variables.
-var version = "0.7.0"
+var version = "0.7.1"
 
 func init() {
 	updater.SetCurrentVersion(version)

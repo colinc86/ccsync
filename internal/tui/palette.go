@@ -270,6 +270,19 @@ func allPaletteCommands() []paletteCommand {
 	}
 	return []paletteCommand{
 		{
+			label: "Inspect profile", keywords: "inspect what syncing things inventory skills commands agents mcp view",
+			hint: "see what's in this profile — skills, commands, subagents, MCP servers",
+			action: func(c *AppContext) tea.Cmd {
+				return switchTo(newProfileInspect(c))
+			},
+			available: bootstrapped,
+			// Strong context boost on bootstrapped accounts — the
+			// inspector is the new default discovery surface. Ranks
+			// below hard-forcing commands (Resolve = 100, Unlock = 95)
+			// so those still win during conflict or lock state.
+			contextScore: func(c *AppContext) int { return 70 },
+		},
+		{
 			label: "Sync now", keywords: "sync push pull apply",
 			hint: "run the full push/pull/merge cycle",
 			action: func(c *AppContext) tea.Cmd {

@@ -80,6 +80,12 @@ func (m *homeModel) rebuildMoreItems() {
 	bootstrapped := m.ctx.State.SyncRepoURL != ""
 	items := []homeChoice{
 		{
+			key:     "i",
+			label:   "What's syncing (inspect profile)",
+			enabled: bootstrapped,
+			onEnter: func() tea.Cmd { return switchTo(newProfileInspect(m.ctx)) },
+		},
+		{
 			key:     "b",
 			label:   "Browse tracked files",
 			enabled: bootstrapped,

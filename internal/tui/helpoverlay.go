@@ -28,9 +28,18 @@ var helpOverlayContent = []helpSection{
 		Title: "home dashboard",
 		Rows: []helpRow{
 			{"enter", "sync now (or start setup)"},
-			{"m", "more — profiles, history, settings, …"},
+			{"m", "more — inspect, profiles, history, settings, …"},
 			{"r", "re-check remote now"},
 			{"q", "quit"},
+		},
+	},
+	{
+		Title: "inspect profile (more → i)",
+		Rows: []helpRow{
+			{"↑↓ / j k", "move between items"},
+			{"r", "refresh the inventory"},
+			{"b", "drop into path-level Browse Tracked"},
+			{"esc", "back"},
 		},
 	},
 	{
