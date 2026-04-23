@@ -155,7 +155,14 @@ func TestInspect_MCPServerStatusIsPerEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := &state.State{ActiveProfile: "default", LastSyncedSHA: map[string]string{}}
+	// Populate LastSyncedSHA so drift counts as a post-sync local
+	// edit (pending push) rather than first-sync-takes-remote
+	// (pending pull). The test is about per-entry MCP isolation,
+	// not first-sync direction flipping.
+	st := &state.State{
+		ActiveProfile: "default",
+		LastSyncedSHA: map[string]string{"default": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+	}
 	v, err := Inspect(Inputs{
 		Config: cfg, State: st,
 		ClaudeDir: claudeDir, ClaudeJSON: claudeJSON, RepoPath: repoPath,
@@ -191,6 +198,132 @@ func TestInspect_MCPServerStatusIsPerEntry(t *testing.T) {
 	}
 	if gotSettings.Status != StatusPendingPush {
 		t.Errorf("settings status = %q, want pending push (theme actually differs)", gotSettings.Status.String())
+	}
+}
+
+// TestInspect_FirstSyncDriftRendersAsPendingPull pins the direction
+// flip for drift when the active profile has no LastSyncedSHA yet —
+// i.e. the user's first sync under this profile hasn't happened.
+// Pre-fix statusFor returned StatusPendingPush for any "both sides
+// differ" row, which was misleading: the sync engine's
+// first-sync-takes-remote rule (v0.6.4) actually PULLS remote down
+// and overwrites local, so rendering the row as "pending push"
+// suggests the wrong direction to the user. Users reinstalling on
+// a second machine saw "everything pending push" and reasonably
+// worried their local content was about to overwrite the fleet
+// repo, when in fact the first sync would do the opposite.
+//
+// Fix: when LastSyncedSHA[active] == "" treat drifted-overlap rows
+// as StatusPendingPull to mirror what the sync engine will do.
+func TestInspect_FirstSyncDriftRendersAsPendingPull(t *testing.T) {
+	tmp := t.TempDir()
+	claudeDir := filepath.Join(tmp, "home", ".claude")
+	claudeJSON := filepath.Join(tmp, "home", ".claude.json")
+	repoPath := filepath.Join(tmp, "repo")
+
+	writeFile := func(path, content string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// CLAUDE.md exists on both sides with different content. No
+	// prior sync for this profile.
+	writeFile(filepath.Join(claudeDir, "CLAUDE.md"), "# Local version\n")
+	writeFile(filepath.Join(repoPath, "profiles/default/claude/CLAUDE.md"), "# Repo version\n")
+	writeFile(claudeJSON, `{}`)
+
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// LastSyncedSHA empty for "default" — this is a first-sync
+	// scenario.
+	st := &state.State{ActiveProfile: "default", LastSyncedSHA: map[string]string{}}
+	v, err := Inspect(Inputs{
+		Config: cfg, State: st,
+		ClaudeDir: claudeDir, ClaudeJSON: claudeJSON, RepoPath: repoPath,
+	})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	var got *Item
+	for _, s := range v.Sections {
+		for i := range s.Items {
+			it := &s.Items[i]
+			if it.Kind == KindClaudeMD {
+				got = it
+			}
+		}
+	}
+	if got == nil {
+		t.Fatal("expected a CLAUDE.md item in the view")
+	}
+	if got.Status != StatusPendingPull {
+		t.Errorf("CLAUDE.md status = %q, want pending pull — on first sync under this profile the engine takes remote; rendering the row as pending push suggests the wrong direction and alarms users who worry their local is about to overwrite the repo",
+			got.Status.String())
+	}
+}
+
+// TestInspect_PostFirstSyncDriftStillPendingPush pins the opposite
+// side of the same coin: once LastSyncedSHA is populated for the
+// active profile, drift means the user has made local edits since
+// the last sync, which IS a pending push. Without this guard the
+// first-sync-pull fix would swallow every subsequent local edit
+// into a misleading "pending pull."
+func TestInspect_PostFirstSyncDriftStillPendingPush(t *testing.T) {
+	tmp := t.TempDir()
+	claudeDir := filepath.Join(tmp, "home", ".claude")
+	claudeJSON := filepath.Join(tmp, "home", ".claude.json")
+	repoPath := filepath.Join(tmp, "repo")
+
+	writeFile := func(path, content string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeFile(filepath.Join(claudeDir, "CLAUDE.md"), "# Local edit after sync\n")
+	writeFile(filepath.Join(repoPath, "profiles/default/claude/CLAUDE.md"), "# Previously-synced\n")
+	writeFile(claudeJSON, `{}`)
+
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// LastSyncedSHA populated — a real post-sync edit.
+	st := &state.State{
+		ActiveProfile: "default",
+		LastSyncedSHA: map[string]string{"default": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+	}
+	v, err := Inspect(Inputs{
+		Config: cfg, State: st,
+		ClaudeDir: claudeDir, ClaudeJSON: claudeJSON, RepoPath: repoPath,
+	})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	var got *Item
+	for _, s := range v.Sections {
+		for i := range s.Items {
+			it := &s.Items[i]
+			if it.Kind == KindClaudeMD {
+				got = it
+			}
+		}
+	}
+	if got == nil {
+		t.Fatal("expected a CLAUDE.md item")
+	}
+	if got.Status != StatusPendingPush {
+		t.Errorf("CLAUDE.md status = %q, want pending push — the user has synced under this profile before and now has local edits, so the sync engine will push; rendering as pending pull would wrongly suggest remote is authoritative",
+			got.Status.String())
 	}
 }
 

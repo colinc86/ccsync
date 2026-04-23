@@ -91,7 +91,13 @@ func Inspect(in Inputs) (*View, error) {
 	//    servers expand to one Item per server under the
 	//    claude.json's mcpServers key.
 	jsonRules := resolveAllJSONRules(in.Config, in.ClaudeDir, in.ClaudeJSON)
-	items := buildItems(localByRel, repoByRel, excluded, jsonRules, profile)
+	// firstSync reflects whether this profile has ever been synced
+	// on this machine. With an empty LastSyncedSHA, the engine's
+	// first-sync-takes-remote rule (v0.6.4) will pull repo content
+	// DOWN and overwrite local on any drift — so Inspect should
+	// render drift rows as pending pull to match, not pending push.
+	firstSync := in.State == nil || in.State.LastSyncedSHA[profile] == ""
+	items := buildItems(localByRel, repoByRel, excluded, jsonRules, profile, firstSync)
 
 	// 5. Group by Kind using a fixed order; prune empty sections.
 	view.Sections = groupByKind(items)
@@ -244,7 +250,7 @@ func resolveAllJSONRules(cfg *config.Config, claudeDir, claudeJSON string) map[s
 // engine uses before comparison — otherwise redacted secrets or
 // explicitly-excluded keys (permissions.allow on settings.json,
 // cachedGrowthBook* on claude.json) register as permanent drift.
-func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded map[string]bool, jsonRules map[string]config.JSONFileRule, profile string) []Item {
+func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded map[string]bool, jsonRules map[string]config.JSONFileRule, profile string, firstSync bool) []Item {
 	// Union of rel-paths across both sides.
 	seen := map[string]struct{}{}
 	for k := range local {
@@ -279,7 +285,7 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 			// pending-push even when every user-visible key is
 			// synced.
 			rule := jsonRules[rel]
-			fileStatus := jsonFilteredFileStatus(localData, repoData, excluded[rel], rule, profile)
+			fileStatus := jsonFilteredFileStatus(localData, repoData, excluded[rel], rule, profile, firstSync)
 			items = append(items, extractMCPServers(
 				localData, repoData, rule, profile, excluded[rel], rel)...)
 			summaryData := localData
@@ -297,14 +303,14 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 		// user-authored excludes like $.permissions.allow are what
 		// the sync engine uses and the inspector should mirror, or
 		// the row shows drift the engine won't act on.
-		status := statusFor(rel, local, repo, excluded)
+		status := statusFor(rel, local, repo, excluded, firstSync)
 		if rule, ok := jsonRules[rel]; ok && (local[rel] != nil || repo[rel] != nil) {
 			var ld, rd []byte
 			if e := local[rel]; e != nil {
 				ld = e.Bytes
 			}
 			rd = repo[rel]
-			status = jsonFilteredFileStatus(ld, rd, excluded[rel], rule, profile)
+			status = jsonFilteredFileStatus(ld, rd, excluded[rel], rule, profile, firstSync)
 		}
 		// The bytes we'll extract metadata from: prefer local
 		// (most recent authoritative copy from the user's POV);
@@ -344,7 +350,7 @@ func canonicalJSON(data []byte) []byte {
 // pending-push because of legitimate-by-design drift. Returns
 // StatusSynced when both sides reduce to the same bytes; the
 // usual local/repo presence cases otherwise.
-func jsonFilteredFileStatus(localData, repoData []byte, fileExcluded bool, rule config.JSONFileRule, profile string) Status {
+func jsonFilteredFileStatus(localData, repoData []byte, fileExcluded bool, rule config.JSONFileRule, profile string, firstSync bool) Status {
 	if fileExcluded {
 		return StatusExcluded
 	}
@@ -356,6 +362,9 @@ func jsonFilteredFileStatus(localData, repoData []byte, fileExcluded bool, rule 
 		if sha256.Sum256(canonicalJSON(effective)) == sha256.Sum256(canonicalJSON(repoData)) {
 			return StatusSynced
 		}
+		if firstSync {
+			return StatusPendingPull
+		}
 		return StatusPendingPush
 	case hasLocal && !hasRepo:
 		return StatusPendingPush
@@ -365,8 +374,12 @@ func jsonFilteredFileStatus(localData, repoData []byte, fileExcluded bool, rule 
 	return StatusSynced
 }
 
-// statusFor decides the sync state of one rel-path.
-func statusFor(rel string, local map[string]*localEntry, repo map[string][]byte, excluded map[string]bool) Status {
+// statusFor decides the sync state of one rel-path. firstSync
+// (LastSyncedSHA empty for the active profile) flips drift-
+// direction to pending pull, matching the sync engine's
+// first-sync-takes-remote rule; otherwise drift counts as a local
+// edit since the last sync, i.e. pending push.
+func statusFor(rel string, local map[string]*localEntry, repo map[string][]byte, excluded map[string]bool, firstSync bool) Status {
 	if excluded[rel] {
 		return StatusExcluded
 	}
@@ -377,12 +390,9 @@ func statusFor(rel string, local map[string]*localEntry, repo map[string][]byte,
 		if le.Sha == sha256.Sum256(rd) {
 			return StatusSynced
 		}
-		// Bytes differ — technically push-or-pull requires baseline,
-		// but for an inventory inspector "there's drift" reads as
-		// pending push from the local POV (the user's machine has
-		// a newer version than the repo remembers). If it turns
-		// out to be an incoming pull, the real sync plan will
-		// correct the framing.
+		if firstSync {
+			return StatusPendingPull
+		}
 		return StatusPendingPush
 	case hasLocal && !hasRepo:
 		return StatusPendingPush
