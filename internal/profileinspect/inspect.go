@@ -2,6 +2,7 @@ package profileinspect
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -59,14 +60,20 @@ func Inspect(in Inputs) (*View, error) {
 	//    marking. Uses the same .syncignore rules sync uses.
 	localByRel, excluded := walkLocal(in)
 
-	// 3. Walk repo side (every profile in the chain).
-	repoByRel := walkRepoChain(in.RepoPath, resolved.Chain)
+	// 3. Walk repo side (every profile in the chain). Same
+	//    .syncignore the local walker uses, so repo-side artefacts
+	//    matching an ignore pattern don't show up as ghost
+	//    pending-pulls against a local copy the sync engine
+	//    legitimately skipped.
+	syncMatcher := loadSyncignore(in.RepoPath, in.Config.DefaultSyncignore)
+	repoByRel := walkRepoChain(in.RepoPath, resolved.Chain, syncMatcher)
 
 	// 4. Combine into Items. Each unique rel-path (relative to the
 	//    active profile prefix) produces zero-or-more Items — mcp
 	//    servers expand to one Item per server under the
 	//    claude.json's mcpServers key.
-	items := buildItems(localByRel, repoByRel, excluded)
+	jsonRules := resolveAllJSONRules(in.Config, in.ClaudeDir, in.ClaudeJSON)
+	items := buildItems(localByRel, repoByRel, excluded, jsonRules, profile)
 
 	// 5. Group by Kind using a fixed order; prune empty sections.
 	view.Sections = groupByKind(items)
@@ -129,7 +136,7 @@ func walkLocal(in Inputs) (map[string]*localEntry, map[string]bool) {
 // map is keyed by the SAME rel-path shape walkLocal uses
 // (no "profiles/<name>/" prefix) so the caller can simply match
 // between the two maps.
-func walkRepoChain(repoPath string, chain []string) map[string][]byte {
+func walkRepoChain(repoPath string, chain []string, syncMatcher *ignore.Matcher) map[string][]byte {
 	out := map[string][]byte{}
 	if repoPath == "" {
 		return out
@@ -145,20 +152,67 @@ func walkRepoChain(repoPath string, chain []string) map[string][]byte {
 			if err != nil {
 				return nil
 			}
-			if d.IsDir() {
-				return nil
-			}
 			rel, rerr := filepath.Rel(root, path)
 			if rerr != nil {
+				return nil
+			}
+			rel = filepath.ToSlash(rel)
+
+			// .syncignore patterns are written relative to
+			// ~/.claude, not to the repo tree, so strip the
+			// leading "claude/" before matching (discover.go
+			// applies the same normalisation on the local side).
+			// claude.json sits at the root without the prefix and
+			// falls through unchanged.
+			matchRel := strings.TrimPrefix(rel, "claude/")
+			if d.IsDir() {
+				if syncMatcher != nil && syncMatcher.Matches(matchRel+"/") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if syncMatcher != nil && syncMatcher.Matches(matchRel) {
 				return nil
 			}
 			data, rerr := os.ReadFile(path)
 			if rerr != nil {
 				return nil
 			}
-			out[filepath.ToSlash(rel)] = data
+			out[rel] = data
 			return nil
 		})
+	}
+	return out
+}
+
+// resolveAllJSONRules produces a rel-path → JSONFileRule map for
+// every jsonFiles entry in the config. Keys are normalised to the
+// repo-relative shape Inspect uses internally: "~/.claude.json" →
+// "claude.json", "~/.claude/settings.json" → "claude/settings.json".
+// Absolute-path keys are matched against the runtime-resolved
+// ClaudeDir / ClaudeJSON and mapped the same way. Callers consult
+// this map during status computation so any configured JSON file
+// gets its sync engine-equivalent filter applied before byte
+// comparison; without it, rules like the settings.json
+// permissions.allow exclude show up as permanent drift.
+func resolveAllJSONRules(cfg *config.Config, claudeDir, claudeJSON string) map[string]config.JSONFileRule {
+	out := map[string]config.JSONFileRule{}
+	if cfg == nil {
+		return out
+	}
+	for key, rule := range cfg.JSONFiles {
+		rel := ""
+		switch {
+		case key == "~/.claude.json" || key == claudeJSON:
+			rel = "claude.json"
+		case strings.HasPrefix(key, "~/.claude/"):
+			rel = "claude/" + strings.TrimPrefix(key, "~/.claude/")
+		case claudeDir != "" && strings.HasPrefix(key, claudeDir+"/"):
+			rel = "claude/" + strings.TrimPrefix(key, claudeDir+"/")
+		}
+		if rel != "" {
+			out[rel] = rule
+		}
 	}
 	return out
 }
@@ -166,8 +220,13 @@ func walkRepoChain(repoPath string, chain []string) map[string][]byte {
 // buildItems produces the flat Item list for the caller to group.
 // Iterates every rel path known to either side, dispatches to the
 // right extractor by category.Classify + file shape, and assigns a
-// Status from a local-vs-repo cross-reference.
-func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded map[string]bool) []Item {
+// Status from a local-vs-repo cross-reference. jsonRules maps
+// rel-path → ccsync.yaml JSONFileRule so any file with a redact /
+// exclude policy goes through the same jsonfilter.Apply the sync
+// engine uses before comparison — otherwise redacted secrets or
+// explicitly-excluded keys (permissions.allow on settings.json,
+// cachedGrowthBook* on claude.json) register as permanent drift.
+func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded map[string]bool, jsonRules map[string]config.JSONFileRule, profile string) []Item {
 	// Union of rel-paths across both sides.
 	seen := map[string]struct{}{}
 	for k := range local {
@@ -194,11 +253,17 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 			if r, ok := repo[rel]; ok {
 				repoData = r
 			}
-			fileStatus := statusFor(rel, local, repo, excluded)
+			// File-level status for the settings summary has to
+			// honour the same redact/exclude rules the sync
+			// engine uses; otherwise the filter-excluded keys
+			// (cachedGrowthBookFeatures, autoUpdatesProtected…)
+			// register as drift and the summary row sits stuck
+			// pending-push even when every user-visible key is
+			// synced.
+			rule := jsonRules[rel]
+			fileStatus := jsonFilteredFileStatus(localData, repoData, excluded[rel], rule, profile)
 			items = append(items, extractMCPServers(
-				localData, repoData, excluded[rel], rel)...)
-			// Metadata for the settings summary: local preferred,
-			// repo fallback (same rule as below for non-JSON rels).
+				localData, repoData, rule, profile, excluded[rel], rel)...)
 			summaryData := localData
 			if summaryData == nil {
 				summaryData = repoData
@@ -209,7 +274,20 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 			continue
 		}
 
+		// Any file covered by a jsonFiles rule (e.g.
+		// claude/settings.json) gets filter-aware comparison too —
+		// user-authored excludes like $.permissions.allow are what
+		// the sync engine uses and the inspector should mirror, or
+		// the row shows drift the engine won't act on.
 		status := statusFor(rel, local, repo, excluded)
+		if rule, ok := jsonRules[rel]; ok && (local[rel] != nil || repo[rel] != nil) {
+			var ld, rd []byte
+			if e := local[rel]; e != nil {
+				ld = e.Bytes
+			}
+			rd = repo[rel]
+			status = jsonFilteredFileStatus(ld, rd, excluded[rel], rule, profile)
+		}
 		// The bytes we'll extract metadata from: prefer local
 		// (most recent authoritative copy from the user's POV);
 		// fall back to repo.
@@ -222,6 +300,51 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 		items = append(items, itemsFrom(rel, data, status)...)
 	}
 	return items
+}
+
+// canonicalJSON returns a stable byte-form of data so equality
+// checks don't flip because of whitespace or key-order noise.
+// Unparseable input falls through as-is — the caller treats it
+// as "compare raw", which is the conservative choice.
+func canonicalJSON(data []byte) []byte {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return data
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+// jsonFilteredFileStatus computes the status of a JSON-backed file
+// after running the configured jsonfilter rule over the local
+// bytes. Equivalent to statusFor for any file, but filter-aware:
+// redacted secrets and excluded machine-local keys match what the
+// sync engine actually pushes, so the row doesn't sit stuck
+// pending-push because of legitimate-by-design drift. Returns
+// StatusSynced when both sides reduce to the same bytes; the
+// usual local/repo presence cases otherwise.
+func jsonFilteredFileStatus(localData, repoData []byte, fileExcluded bool, rule config.JSONFileRule, profile string) Status {
+	if fileExcluded {
+		return StatusExcluded
+	}
+	hasLocal := len(localData) > 0
+	hasRepo := len(repoData) > 0
+	switch {
+	case hasLocal && hasRepo:
+		effective := effectiveLocalForCompare(localData, rule, profile)
+		if sha256.Sum256(canonicalJSON(effective)) == sha256.Sum256(canonicalJSON(repoData)) {
+			return StatusSynced
+		}
+		return StatusPendingPush
+	case hasLocal && !hasRepo:
+		return StatusPendingPush
+	case !hasLocal && hasRepo:
+		return StatusPendingPull
+	}
+	return StatusSynced
 }
 
 // statusFor decides the sync state of one rel-path.

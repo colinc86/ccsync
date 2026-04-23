@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/colinc86/ccsync/internal/config"
+	"github.com/colinc86/ccsync/internal/jsonfilter"
 )
 
 // extractMCPServers parses the mcpServers object out of local and
@@ -15,13 +18,22 @@ import (
 // (repoData == nil) reproduces the pre-v0.8.1 "whole-file status"
 // behaviour for call sites that don't have both sides.
 //
+// Comparison happens AFTER applying the ccsync.yaml jsonFiles rule
+// for claude.json (exclude + redact) to the local bytes. Otherwise
+// a redacted secret in the repo would always diverge from the
+// real secret on disk, pinning every server with a redacted field
+// into permanent "pending push" — the v0.8.1 report shape.
+//
 // Each server's Title is the map key ("gemini-embedding"). Its
 // Description is synthesised from the `command` + first `args`
 // entry when no explicit description is on the entry — the user-
 // facing gloss is "launches `gemini-mcp`" or "runs via `npx
 // gemini-embedding`" depending on how the server is wired.
-func extractMCPServers(localData, repoData []byte, fileExcluded bool, pathPrefix string) []Item {
-	localServers := parseMCPServers(localData)
+func extractMCPServers(localData, repoData []byte, rule config.JSONFileRule, profile string, fileExcluded bool, pathPrefix string) []Item {
+	// Apply redaction/filtering so local's real secrets don't
+	// register as drift against the repo's placeholders.
+	compLocal := effectiveLocalForCompare(localData, rule, profile)
+	localServers := parseMCPServers(compLocal)
 	repoServers := parseMCPServers(repoData)
 	if len(localServers) == 0 && len(repoServers) == 0 {
 		return nil
@@ -68,6 +80,28 @@ func extractMCPServers(localData, repoData []byte, fileExcluded bool, pathPrefix
 		})
 	}
 	return items
+}
+
+// effectiveLocalForCompare runs the configured jsonfilter rule over
+// local claude.json bytes so comparison against the repo copy is
+// apples-to-apples. Without this, a redact rule (e.g. env secrets)
+// guarantees drift: local has the real value, repo has the
+// placeholder, and every server with a redacted field appears
+// permanently pending-push. Returns the raw input unchanged when
+// the rule is empty or filtering fails — the caller falls back to
+// the pre-v0.8.1 behaviour for those edge cases.
+func effectiveLocalForCompare(localData []byte, rule config.JSONFileRule, profile string) []byte {
+	if len(localData) == 0 {
+		return localData
+	}
+	if len(rule.Exclude) == 0 && len(rule.Redact) == 0 && len(rule.Include) == 0 {
+		return localData
+	}
+	res, err := jsonfilter.Apply(localData, rule, profile)
+	if err != nil {
+		return localData
+	}
+	return res.Data
 }
 
 // parseMCPServers pulls the raw $.mcpServers map out of a claude.json
