@@ -31,6 +31,32 @@ type syncModel struct {
 	pendingPromotes []promoteIntent
 	promoteErr      error
 	promoteRan      bool
+
+	// autoResolveDispatched latches once the conflict-policy auto-
+	// resolve fires so a second doneMsg (e.g. from the background
+	// plan refresh) doesn't re-dispatch the same resolution.
+	autoResolveDispatched bool
+}
+
+// autoResolveDoneMsg carries the result of a conflict-policy auto-
+// resolver back into the sync screen's Update loop. Separate from
+// the per-key resolver's msg types so a race between them doesn't
+// cross wires.
+type autoResolveDoneMsg struct{ err error }
+
+// runAutoResolveConflicts dispatches sync.ApplyResolutions with
+// the policy-computed resolutions map. Used by the conflict-
+// policy auto-resolver to finish a sync that would otherwise be
+// stuck waiting on manual input.
+func runAutoResolveConflicts(ctx *AppContext, resolutions map[string][]byte) tea.Cmd {
+	return func() tea.Msg {
+		in, err := buildSyncInputs(ctx, false)
+		if err != nil {
+			return autoResolveDoneMsg{err: err}
+		}
+		_, err = sync.ApplyResolutions(context.Background(), in, resolutions)
+		return autoResolveDoneMsg{err: err}
+	}
 }
 
 // promoteIntent is the information a syncModel needs to run
@@ -219,7 +245,41 @@ func (m *syncModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.promoteRan = true
 			return m, tea.Batch(runPromotes(m.ctx, m.pendingPromotes), refreshPlanCmd(m.ctx), toast)
 		}
+		// Conflict-policy auto-resolver: if the user set "take this
+		// machine's" or "take the cloud's" AND none of the conflicts
+		// are delete-vs-modify (those always escape to the picker),
+		// apply the policy right now instead of waiting for the
+		// user to press `r`. Silently resolves the common
+		// "simultaneous edit, one side wins" case per the user's
+		// stated preference. If delete-vs-modify is in the mix, fall
+		// through to the existing "press r to resolve" flow so the
+		// picker shows and the user makes the destructive choice.
+		if msg.err == nil && m.result != nil &&
+			len(m.result.Plan.Conflicts) > 0 &&
+			m.ctx.State.ConflictPolicyAutomated() &&
+			!sync.AnyDeleteVsModify(m.result.Plan.Conflicts) &&
+			!m.autoResolveDispatched {
+			m.autoResolveDispatched = true
+			resolutions := sync.ResolutionsFromPolicy(
+				m.result.Plan.Conflicts, m.ctx.State.ConflictPolicy)
+			return m, tea.Batch(
+				runAutoResolveConflicts(m.ctx, resolutions),
+				toast,
+			)
+		}
 		return m, tea.Batch(refreshPlanCmd(m.ctx), toast)
+	case autoResolveDoneMsg:
+		// Background policy-based resolve finished. Treat it as a
+		// completed sync: refresh state so Home / badges reflect
+		// the new commit, and surface a success/failure toast.
+		m.ctx.RefreshState()
+		if msg.err != nil {
+			return m, showToast("auto-resolve failed: "+msg.err.Error(), toastError)
+		}
+		return m, tea.Batch(
+			refreshPlanCmd(m.ctx),
+			showToast("conflicts auto-resolved per policy", toastSuccess),
+		)
 	case promotesDoneMsg:
 		m.promoteErr = msg.err
 		// Re-refresh so the dashboard reflects the promote commit.

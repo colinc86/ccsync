@@ -215,6 +215,26 @@ func (m *settingsModel) buildRows() {
 			},
 		},
 		{
+			label: "when versions diverge", kind: kindRadio,
+			options: []string{"ask me", "take this machine's", "take the cloud's"},
+			value:   func() string { return ctx.State.ConflictPolicyLabel() },
+			cycle: func() error {
+				// ask → local → cloud → ask. Matches the settings
+				// row's visible order so repeated presses feel
+				// predictable. Delete-vs-modify conflicts still
+				// escape to the picker even when automation is on.
+				switch ctx.State.ConflictPolicy {
+				case state.ConflictPolicyLocal:
+					ctx.State.ConflictPolicy = state.ConflictPolicyCloud
+				case state.ConflictPolicyCloud:
+					ctx.State.ConflictPolicy = state.ConflictPolicyAsk
+				default:
+					ctx.State.ConflictPolicy = state.ConflictPolicyLocal
+				}
+				return state.Save(ctx.StateDir, ctx.State)
+			},
+		},
+		{
 			label: "secrets backend", kind: kindRadio,
 			options: []string{"keychain", "file"},
 			value:   func() string { return currentSecretsLabel(ctx.State.SecretsBackend) },

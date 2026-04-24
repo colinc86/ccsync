@@ -111,6 +111,25 @@ type State struct {
 	// their explicit AutoApplyClean preference still wins.
 	SyncMode string `json:"syncMode,omitempty"`
 
+	// ConflictPolicy is the per-machine default for resolving
+	// simultaneous-edit conflicts without prompting. Valid values:
+	//   - "" / "ask":   show the conflict resolver (current default)
+	//   - "local":      this machine wins; remote version gets
+	//                   replaced with ours on every conflict. Fits
+	//                   a primary workstation actively authoring
+	//                   content. Still escapes to the picker for
+	//                   delete-vs-modify conflicts — silently
+	//                   winning when "winning" means "restore a
+	//                   file the other side deleted" is too
+	//                   destructive to automate.
+	//   - "cloud":      cloud wins; local gets overwritten. Fits
+	//                   a mirror machine (testing / secondary)
+	//                   that should track the fleet. Same
+	//                   delete-vs-modify escape applies.
+	// The picker's bulk-choice keys (1 / 2 / 3) remain available
+	// when it does surface, for one-off overrides.
+	ConflictPolicy string `json:"conflictPolicy,omitempty"`
+
 	// Policies per-category × per-direction. Empty value in any slot is
 	// treated as "auto" so existing state.json files from v0.3/v0.4 keep
 	// their silent-sync behavior — only users who opt in (or go through
@@ -389,6 +408,42 @@ func (s *State) SyncModeLabel() string {
 		return "auto"
 	default:
 		return "manual"
+	}
+}
+
+// Conflict policy string values. Kept here as package-level
+// constants so the TUI, settings screen, and sync engine all
+// resolve from the same source.
+const (
+	ConflictPolicyAsk   = "ask"
+	ConflictPolicyLocal = "local"
+	ConflictPolicyCloud = "cloud"
+)
+
+// ConflictPolicyAutomated reports whether the current conflict
+// policy chooses a side without prompting. "ask" (or empty) stays
+// manual.
+func (s *State) ConflictPolicyAutomated() bool {
+	if s == nil {
+		return false
+	}
+	return s.ConflictPolicy == ConflictPolicyLocal ||
+		s.ConflictPolicy == ConflictPolicyCloud
+}
+
+// ConflictPolicyLabel returns a short human label matching the
+// Settings row's shown options.
+func (s *State) ConflictPolicyLabel() string {
+	if s == nil {
+		return "ask me"
+	}
+	switch s.ConflictPolicy {
+	case ConflictPolicyLocal:
+		return "take this machine's"
+	case ConflictPolicyCloud:
+		return "take the cloud's"
+	default:
+		return "ask me"
 	}
 }
 
