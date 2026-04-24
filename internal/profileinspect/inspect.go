@@ -11,10 +11,19 @@ import (
 
 	"github.com/colinc86/ccsync/internal/category"
 	"github.com/colinc86/ccsync/internal/config"
+	cryptopkg "github.com/colinc86/ccsync/internal/crypto"
 	"github.com/colinc86/ccsync/internal/discover"
 	"github.com/colinc86/ccsync/internal/ignore"
+	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
 )
+
+// secretsKeyPassphrase mirrors sync.SecretsKeyPassphrase. Duplicated
+// rather than imported from the sync package to keep profileinspect
+// a thin read-only observer (no dependency on the full sync engine).
+// Both constants MUST stay in lockstep so Inspect pulls the same
+// cached passphrase the sync engine pushes/fetches.
+const secretsKeyPassphrase = "repo-encryption-passphrase"
 
 // Inputs is everything Inspect needs. All fields required except
 // ClaudeJSON (may be empty when a user has no ~/.claude.json yet).
@@ -64,9 +73,16 @@ func Inspect(in Inputs) (*View, error) {
 	//    .syncignore the local walker uses, so repo-side artefacts
 	//    matching an ignore pattern don't show up as ghost
 	//    pending-pulls against a local copy the sync engine
-	//    legitimately skipped.
+	//    legitimately skipped. Decrypt envelope bytes on the way
+	//    in when the repo is encrypted, otherwise raw ciphertext
+	//    would never match plaintext on the local side and every
+	//    row would read pending-push forever.
 	syncMatcher := loadSyncignore(in.RepoPath, in.Config.DefaultSyncignore)
-	repoByRel := walkRepoChain(in.RepoPath, resolved.Chain, syncMatcher)
+	encKey, err := loadInspectEncryptionKey(in.RepoPath)
+	if err != nil {
+		return view, err
+	}
+	repoByRel := walkRepoChain(in.RepoPath, resolved.Chain, syncMatcher, encKey)
 
 	// Profile-excluded paths that ONLY exist on the repo side (never
 	// pulled to local because the profile's exclude rule blocked
@@ -160,7 +176,54 @@ func walkLocal(in Inputs) (map[string]*localEntry, map[string]bool) {
 // map is keyed by the SAME rel-path shape walkLocal uses
 // (no "profiles/<name>/" prefix) so the caller can simply match
 // between the two maps.
-func walkRepoChain(repoPath string, chain []string, syncMatcher *ignore.Matcher) map[string][]byte {
+// loadInspectEncryptionKey mirrors sync.loadRepoEncryptionKey for
+// Inspect's read path. Reads the crypto marker at repoPath; if
+// present, fetches the stashed passphrase and derives the
+// symmetric key. Returns (nil, nil) for plaintext repos. An
+// encrypted repo with no stored passphrase is NOT a hard error —
+// we return nil so Inspect can still render whatever structure
+// walkLocal surfaces; the files that can't decrypt simply remain
+// unknown and show up as drift. This matches the sync engine's
+// "refuse to run without passphrase" boundary only at the Run
+// level, not the inventory level.
+func loadInspectEncryptionKey(repoPath string) ([]byte, error) {
+	m, err := cryptopkg.ReadMarker(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, nil
+	}
+	pp, err := secrets.Fetch(secretsKeyPassphrase)
+	if err != nil {
+		// Passphrase not stored — swallow so Inspect can still
+		// run for a locked-repo browsing session. Callers can
+		// detect the locked state via cryptopkg.ReadMarker
+		// separately if they need to surface a banner.
+		return nil, nil
+	}
+	return m.DeriveKey(pp)
+}
+
+// maybeDecryptForInspect mirrors sync.maybeDecrypt. Leaves data
+// alone when the key is nil (plaintext repo or locked repo without
+// passphrase) or when the payload lacks the crypto magic header
+// (mid-migration plaintext still in-tree). Returns raw ciphertext
+// on decrypt error so the caller can fall through — Inspect is
+// read-only and shouldn't abort the whole walk on a single
+// malformed blob.
+func maybeDecryptForInspect(key, data []byte) []byte {
+	if key == nil || !cryptopkg.HasMagic(data) {
+		return data
+	}
+	plain, err := cryptopkg.Decrypt(key, data)
+	if err != nil {
+		return data
+	}
+	return plain
+}
+
+func walkRepoChain(repoPath string, chain []string, syncMatcher *ignore.Matcher, encKey []byte) map[string][]byte {
 	out := map[string][]byte{}
 	if repoPath == "" {
 		return out
@@ -202,7 +265,7 @@ func walkRepoChain(repoPath string, chain []string, syncMatcher *ignore.Matcher)
 			if rerr != nil {
 				return nil
 			}
-			out[rel] = data
+			out[rel] = maybeDecryptForInspect(encKey, data)
 			return nil
 		})
 	}

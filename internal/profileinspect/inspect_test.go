@@ -8,8 +8,16 @@ import (
 	"testing"
 
 	"github.com/colinc86/ccsync/internal/config"
+	cryptopkg "github.com/colinc86/ccsync/internal/crypto"
+	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
 )
+
+// syncSecretsKeyPassphrase is the keychain entry name sync.Run
+// consults for the repo passphrase. Duplicated here as a const
+// rather than imported from sync to avoid dragging the whole
+// sync package into the inspect tests.
+const syncSecretsKeyPassphrase = "repo-encryption-passphrase"
 
 // TestExtractMarkdownMeta_Frontmatter pins the primary extraction
 // path: a markdown file with YAML frontmatter containing name +
@@ -198,6 +206,106 @@ func TestInspect_MCPServerStatusIsPerEntry(t *testing.T) {
 	}
 	if gotSettings.Status != StatusPendingPush {
 		t.Errorf("settings status = %q, want pending push (theme actually differs)", gotSettings.Status.String())
+	}
+}
+
+// TestInspect_EncryptedRepoDecryptsBeforeCompare pins the fix for
+// the "everything pending push" report that reproduced on both of
+// the user's encrypted-repo machines: the repo stores files as
+// chacha20-poly1305 ciphertext envelopes (CCSY-magic headers), and
+// Inspect was byte-for-byte SHA-comparing those envelopes against
+// local plaintext. The SHAs never match — ciphertext is random —
+// so every row under an encrypted repo reported drift → pending
+// push, and the sync engine's actual decrypt-then-compare view was
+// invisible to the inspector.
+//
+// The fix: Inspect reads the encryption marker, derives the key
+// from the stored passphrase (same path sync.Run uses), and
+// decrypts repo blobs before they enter the SHA compare.
+func TestInspect_EncryptedRepoDecryptsBeforeCompare(t *testing.T) {
+	tmp := t.TempDir()
+	claudeDir := filepath.Join(tmp, "home", ".claude")
+	claudeJSON := filepath.Join(tmp, "home", ".claude.json")
+	repoPath := filepath.Join(tmp, "repo")
+
+	writeFile := func(path, content string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Seed an encryption marker + a passphrase-derived key. We
+	// write ciphertext to the repo and keep plaintext-identical
+	// content locally; Inspect should decrypt the repo blob
+	// before comparing so the row reads as synced.
+	const passphrase = "correct-horse-battery-staple"
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker, err := cryptopkg.NewMarker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cryptopkg.WriteMarker(repoPath, marker); err != nil {
+		t.Fatal(err)
+	}
+	key, err := marker.DeriveKey(passphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stash the passphrase in the same secrets store sync.Run
+	// consults via sync.SecretsKeyPassphrase. Use a file backend
+	// to keep the test sealed off from the real macOS keychain.
+	t.Setenv("CCSYNC_SECRETS_BACKEND", "file")
+	t.Setenv("CCSYNC_STATE_DIR", filepath.Join(tmp, ".ccsync"))
+	t.Cleanup(func() { _ = secrets.Delete(syncSecretsKeyPassphrase) })
+	if err := secrets.Store(syncSecretsKeyPassphrase, passphrase); err != nil {
+		t.Fatal(err)
+	}
+
+	plain := []byte("# User CLAUDE.md\nidentical on both sides\n")
+	writeFile(filepath.Join(claudeDir, "CLAUDE.md"), string(plain))
+	ciphertext, err := cryptopkg.Encrypt(key, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(filepath.Join(repoPath, "profiles/default/claude/CLAUDE.md"), string(ciphertext))
+	writeFile(claudeJSON, `{}`)
+
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &state.State{
+		ActiveProfile: "default",
+		LastSyncedSHA: map[string]string{"default": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+	}
+	v, err := Inspect(Inputs{
+		Config: cfg, State: st,
+		ClaudeDir: claudeDir, ClaudeJSON: claudeJSON, RepoPath: repoPath,
+	})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	var got *Item
+	for _, s := range v.Sections {
+		for i := range s.Items {
+			it := &s.Items[i]
+			if it.Kind == KindClaudeMD {
+				got = it
+			}
+		}
+	}
+	if got == nil {
+		t.Fatal("expected a CLAUDE.md item")
+	}
+	if got.Status != StatusSynced {
+		t.Errorf("CLAUDE.md status = %q, want synced — the repo holds a chacha20-encrypted envelope of identical bytes; Inspect should decrypt before SHA-comparing so the row reflects the sync engine's view, not raw-ciphertext-vs-plaintext drift",
+			got.Status.String())
 	}
 }
 
