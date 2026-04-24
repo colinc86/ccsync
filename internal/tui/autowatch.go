@@ -61,7 +61,11 @@ func startAutoWatchCmd(ctx *AppContext) tea.Cmd {
 	if ctx.State.SyncRepoURL == "" {
 		return nil
 	}
-	if !ctx.State.IsAutoMode() {
+	// Auto and approve modes both run the file watcher — auto
+	// applies every change, approve auto-applies only modifies /
+	// deletes and leaves new-file adds for the review screen. Manual
+	// mode keeps the watcher off.
+	if !ctx.State.IsAutoMode() && !ctx.State.IsApproveMode() {
 		return nil
 	}
 	return func() tea.Msg {
@@ -237,7 +241,12 @@ func maybeLaunchAutoSync(ctx *AppContext) tea.Cmd {
 	if ctx == nil || ctx.State == nil {
 		return nil
 	}
-	if !ctx.State.IsAutoMode() {
+	// Approve mode is treated as auto-with-a-gate: the same
+	// watcher-triggered background sync fires, but we bail
+	// below if the plan has any Review items so new files
+	// don't get silently pushed/pulled without the user's
+	// allow/deny on the review screen.
+	if !ctx.State.IsAutoMode() && !ctx.State.IsApproveMode() {
 		return nil
 	}
 	if ctx.PendingProfileChoice {
@@ -256,6 +265,16 @@ func maybeLaunchAutoSync(ctx *AppContext) tea.Cmd {
 	}
 	if len(ctx.Plan.Conflicts) > 0 {
 		return nil
+	}
+	// Approve-mode gate: if any action needs review (new files),
+	// don't auto-apply. The user has to walk through SyncPreview →
+	// Review to decide. Modifies/deletes with no adds fall through
+	// to the normal auto-sync path below.
+	if ctx.State.IsApproveMode() {
+		part := syncpkg.PartitionPlan(*ctx.Plan, ctx.State)
+		if len(part.Review) > 0 {
+			return nil
+		}
 	}
 	s := ctx.Summary()
 	if s.Outbound == 0 && s.Inbound == 0 {

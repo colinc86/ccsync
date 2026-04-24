@@ -94,11 +94,20 @@ type State struct {
 	// SyncRepoURL first — so the backfill is automatic.
 	OnboardingComplete bool `json:"onboardingComplete,omitempty"`
 
-	// SyncMode picks the default sync UX: "auto" runs a file watcher
-	// while the TUI is open and auto-applies clean syncs without a
-	// preview keypress; "manual" keeps the preview-every-sync cadence
-	// v0.2.x shipped. Empty value is treated as "auto" so new installs
-	// get the simpler experience. Existing users are *not* migrated —
+	// SyncMode picks the default sync UX. Three valid values:
+	//   - "auto": file watcher + auto-apply clean syncs (the "install,
+	//     sync, forget" default)
+	//   - "approve": auto-apply modifications and deletes both
+	//     directions, but pause on any new file (push or pull) for the
+	//     user to allow or deny. Lets users run mostly-auto while
+	//     keeping a gate on NEW content flowing in or out — so a
+	//     stray skill on one machine doesn't silently propagate to
+	//     the fleet, and a teammate's new MCP server doesn't auto-
+	//     land in their profile.
+	//   - "manual": preview-every-sync cadence v0.2.x shipped; nothing
+	//     auto-applies.
+	// Empty value is treated as "auto" so new installs get the
+	// simplest experience. Existing users are *not* migrated —
 	// their explicit AutoApplyClean preference still wins.
 	SyncMode string `json:"syncMode,omitempty"`
 
@@ -351,11 +360,36 @@ func (s *State) AllowMCPServer(name string) {
 // IsAutoMode reports whether this machine is running in the default
 // "install, sync, forget" mode. Empty string is treated as auto so fresh
 // installs get the zero-config experience without a state migration.
+// Does NOT return true for "approve" — approve mode wants the review
+// screen for new files, so background auto-sync stays off.
 func (s *State) IsAutoMode() bool {
 	if s == nil {
 		return true
 	}
 	return s.SyncMode == "" || s.SyncMode == "auto"
+}
+
+// IsApproveMode reports whether new-file actions (both push-new and
+// pull-new) should be routed through the review screen for per-item
+// allow/deny, while modifications and deletes flow through
+// auto-style. Independent of IsAutoMode so callers can branch on
+// background-sync eligibility (auto only) vs. auto-apply-after-
+// review eligibility (auto or approve).
+func (s *State) IsApproveMode() bool {
+	return s != nil && s.SyncMode == "approve"
+}
+
+// SyncModeLabel returns a short human label for the current sync
+// mode, suitable for the settings row and Home dashboard badge.
+func (s *State) SyncModeLabel() string {
+	switch {
+	case s.IsApproveMode():
+		return "approve new files"
+	case s.IsAutoMode():
+		return "auto"
+	default:
+		return "manual"
+	}
 }
 
 // FetchIntervalDuration returns the parsed fetch interval, or zero when the

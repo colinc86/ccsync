@@ -146,22 +146,20 @@ func (m *syncPreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ctx.PlanTime = time.Now()
 			m.ctx.PlanErr = nil
 		}
-		// Auto-apply gate. In auto mode, the promise is "install, sync,
-		// forget" — anything the three-way merge resolves without a
-		// conflict should apply without a keypress, including pushes and
-		// pulls. The preview still renders briefly before the apply kicks
-		// off so the user catches a glimpse of what's happening. In
-		// manual mode, keep the stricter AutoApplyClean opt-in (only
-		// apply when the plan is entirely empty) so explicit review is
-		// still the default. Conflicts never auto-apply either way. If
-		// any category's policy is "review", the review screen gates
-		// the actual sync regardless of auto/manual.
+		// Auto-apply gate. Auto mode is "install, sync, forget" —
+		// anything the three-way merge resolves without a conflict
+		// applies without a keypress. Approve mode auto-applies the
+		// same non-new actions but routes any add-new action into
+		// the review screen via PartitionPlan's approve overlay —
+		// so modifications/deletes flow automatically, new files
+		// gate on allow/deny. Manual mode keeps the stricter
+		// AutoApplyClean opt-in. Conflicts never auto-apply.
 		if m.err == nil && len(m.plan.Conflicts) == 0 {
 			part := sync.PartitionPlan(m.plan, m.ctx.State)
 			if len(part.Review) > 0 {
 				return m, switchTo(newReviewScreen(m.ctx, part.Review, "profiles/"+activeProfile(m.ctx)+"/"))
 			}
-			if m.ctx.State.IsAutoMode() ||
+			if m.ctx.State.IsAutoMode() || m.ctx.State.IsApproveMode() ||
 				(m.ctx.State.AutoApplyClean && m.planIsClean()) {
 				return m, switchTo(newSync(m.ctx))
 			}

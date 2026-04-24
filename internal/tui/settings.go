@@ -178,17 +178,30 @@ func (m *settingsModel) buildRows() {
 		heading("behavior"),
 		{
 			label: "sync mode", kind: kindRadio,
-			options: []string{"auto", "manual"},
+			options: []string{"auto", "approve", "manual"},
 			value: func() string {
-				if ctx.State.IsAutoMode() {
+				switch {
+				case ctx.State.IsApproveMode():
+					return "approve"
+				case ctx.State.IsAutoMode():
 					return "auto"
+				default:
+					return "manual"
 				}
-				return "manual"
 			},
 			cycle: func() error {
-				if ctx.State.IsAutoMode() {
+				// auto → approve → manual → auto. "approve" auto-
+				// applies modifications and deletes but routes any
+				// new file through the review screen for allow /
+				// deny, so the fleet doesn't accidentally adopt
+				// a stray new skill and new incoming files don't
+				// land without a nod from the user.
+				switch {
+				case ctx.State.IsAutoMode():
+					ctx.State.SyncMode = "approve"
+				case ctx.State.IsApproveMode():
 					ctx.State.SyncMode = "manual"
-				} else {
+				default:
 					ctx.State.SyncMode = "auto"
 				}
 				return state.Save(ctx.StateDir, ctx.State)

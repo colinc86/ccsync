@@ -30,8 +30,16 @@ type Partition struct {
 // is the "profiles/<name>/" prefix of the currently-active profile,
 // used to classify paths correctly (the profiles/... prefix is stripped
 // before calling category.Classify).
+//
+// Approve mode overlay: in state.IsApproveMode(), any add-new action
+// (ActionAddRemote for push-new, ActionAddLocal for pull-new) is
+// unconditionally routed to the Review bucket regardless of the
+// per-category policy. Modify/delete actions still honour their
+// category policy so users can keep approve mode lightweight —
+// nothing flows without a prompt only for genuinely NEW files.
 func PartitionPlan(plan Plan, st *ccstate.State) Partition {
 	var p Partition
+	approve := st.IsApproveMode()
 	for _, a := range plan.Actions {
 		if a.ExcludedByProfile || a.ExcludedByDeny {
 			continue
@@ -41,6 +49,10 @@ func PartitionPlan(plan Plan, st *ccstate.State) Partition {
 			// NoOp or Merge — not a direct push or pull for policy
 			// purposes. Let these flow through as auto.
 			p.Auto = append(p.Auto, a)
+			continue
+		}
+		if approve && isAddAction(a.Action) {
+			p.Review = append(p.Review, a)
 			continue
 		}
 		policy := st.PolicyFor(a.Category, dir)
@@ -54,6 +66,13 @@ func PartitionPlan(plan Plan, st *ccstate.State) Partition {
 		}
 	}
 	return p
+}
+
+// isAddAction reports whether the action creates a new file on one
+// side (as opposed to updating or deleting an existing one). Approve
+// mode uses this to decide whether the row gates on user approval.
+func isAddAction(a manifest.Action) bool {
+	return a == manifest.ActionAddRemote || a == manifest.ActionAddLocal
 }
 
 // actionDirection maps a manifest.Action to the push/pull direction the
