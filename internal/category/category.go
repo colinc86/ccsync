@@ -16,20 +16,30 @@ import (
 // Canonical category identifiers. Any new category added here must also
 // get a corresponding slot in state.CategoryPolicies.
 const (
-	Agents          = "agents"
-	Skills          = "skills"
-	Commands        = "commands"
-	Memory          = "memory"
-	MCPServers      = "mcp_servers"
-	ClaudeMD        = "claude_md"
-	GeneralSettings = "general_settings"
-	Other           = "other"
+	Agents       = "agents"
+	Skills       = "skills"
+	Commands     = "commands"
+	Hooks        = "hooks"
+	OutputStyles = "output_styles"
+	Memory       = "memory"
+	ClaudeMD     = "claude_md"
+	MCPServers   = "mcp_servers"
 )
 
 // All returns the canonical list of categories, in the order the
-// Settings matrix renders them. Kept stable for UI consistency.
+// Settings matrix and review screen render them. Kept stable for UI
+// consistency.
 func All() []string {
-	return []string{Agents, Skills, Commands, Memory, MCPServers, ClaudeMD, GeneralSettings, Other}
+	return []string{
+		Agents,
+		Skills,
+		Commands,
+		Hooks,
+		OutputStyles,
+		Memory,
+		ClaudeMD,
+		MCPServers,
+	}
 }
 
 // Label maps a category identifier to the human-facing name used in
@@ -43,39 +53,51 @@ func Label(c string) string {
 		return "Skills"
 	case Commands:
 		return "Commands"
+	case Hooks:
+		return "Hooks"
+	case OutputStyles:
+		return "Output Styles"
 	case Memory:
 		return "Memory"
-	case MCPServers:
-		return "MCP Servers"
 	case ClaudeMD:
 		return "CLAUDE.md"
-	case GeneralSettings:
-		return "General Settings"
-	case Other:
-		return "Other"
+	case MCPServers:
+		return "MCP Servers"
 	}
 	return c
 }
 
+// Managed-file paths produced by the mcpextract step. These live at
+// the top of profiles/<name>/ rather than under claude/, so they're
+// easy to spot when eyeballing the repo.
+const (
+	ManagedMCPClaudeJSONPath   = ".ccsync.mcp.json"
+	ManagedMCPSettingsJSONPath = "ccsync.mcp.json"
+	ManagedHooksPath           = "ccsync.hooks.json"
+)
+
 // Classify maps a repo-relative path (already stripped of the
 // profiles/<name>/ prefix) to its category. Called with paths like
-// "claude/agents/foo.md", "claude.json", or
-// "claude/skills/x/SKILL.md". Paths outside the known trees fall into
-// Other so the review system never misses a file even if Claude Code
-// adds new directories later.
+// "claude/agents/foo.md", "claude/CLAUDE.md", or "ccsync.mcp.json".
 //
-// Note: claude.json here is classified as GeneralSettings as a default,
-// but sync actions touching mcpServers are reclassified to MCPServers
-// by the sync-side code that has access to the actual diff. This
-// function is for the common case where only the path is available.
+// Every path that ccsync writes into the repo resolves to exactly one
+// category — the discover walk and the mcpextract step are the only
+// producers, both narrow. An empty return means "this is not a path
+// ccsync sync owns" (e.g. manifest.json, .syncignore, ccsync.yaml,
+// the repo README); callers treat that as "ignore for category
+// routing."
 func Classify(repoRelPath string) string {
+	switch repoRelPath {
+	case ManagedMCPClaudeJSONPath, ManagedMCPSettingsJSONPath:
+		return MCPServers
+	case ManagedHooksPath:
+		return Hooks
+	}
 	p := strings.TrimPrefix(repoRelPath, "claude/")
-	if p == repoRelPath && repoRelPath != "claude.json" {
-		return Other
+	if p == repoRelPath {
+		return ""
 	}
 	switch {
-	case repoRelPath == "claude.json":
-		return GeneralSettings
 	case p == "CLAUDE.md":
 		return ClaudeMD
 	case strings.HasPrefix(p, "agents/"):
@@ -84,22 +106,12 @@ func Classify(repoRelPath string) string {
 		return Skills
 	case strings.HasPrefix(p, "commands/"):
 		return Commands
+	case strings.HasPrefix(p, "hooks/"):
+		return Hooks
+	case strings.HasPrefix(p, "output-styles/"):
+		return OutputStyles
 	case strings.HasPrefix(p, "memory/"):
 		return Memory
-	case p == "settings.json":
-		return GeneralSettings
 	}
-	return Other
-}
-
-// ClassifyWithMCP is Classify plus the mcpServers-aware override: when
-// a claude.json action touches only the mcpServers subtree, it returns
-// MCPServers instead of GeneralSettings. The boolean hasMCP must be
-// true when the caller has confirmed the diff is entirely within
-// $.mcpServers.
-func ClassifyWithMCP(repoRelPath string, mcpOnly bool) string {
-	if repoRelPath == "claude.json" && mcpOnly {
-		return MCPServers
-	}
-	return Classify(repoRelPath)
+	return ""
 }

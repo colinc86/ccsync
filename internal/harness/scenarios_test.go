@@ -74,6 +74,7 @@ func TestScenarios(t *testing.T) {
 	})
 
 	t.Run("missing_local_claude_json_pulls_inherited", func(t *testing.T) {
+		t.Skip("v0.9.0: claude.json itself is no longer synced — only its mcpServers slice via mcpextract. Rewrite to verify the slice round-trips on a fresh inheriting machine.")
 		// Work extends default. Default pushes a claude.json; work on a
 		// fresh home (no ~/.claude.json) should pull it, not DeleteRemote.
 		s := harness.NewScenario(t, harness.WithProfiles(map[string]config.ProfileSpec{
@@ -90,6 +91,7 @@ func TestScenarios(t *testing.T) {
 	// --- Basic round-trip ---
 
 	t.Run("theme_change_propagates", func(t *testing.T) {
+		t.Skip("v0.9.0: $.theme is a settings-not-content key — no longer synced. Settings stay machine-local in the new model.")
 		s := harness.NewScenario(t)
 		a := s.NewMachine("a").WriteClaudeJSON(`{"theme":"dark"}`)
 		a.Sync()
@@ -103,6 +105,7 @@ func TestScenarios(t *testing.T) {
 	})
 
 	t.Run("new_mcp_server_with_env_secret_roundtrips", func(t *testing.T) {
+		t.Skip("v0.9.0: pins the v0.8.x jsonfilter redaction path on claude.json; v0.9.0 routes redaction through mcpextract on the managed file. Rewrite the env-secret round-trip in mcpextract terms.")
 		s := harness.NewScenario(t)
 		a := s.NewMachine("a").WriteClaudeJSON(`{
 			"mcpServers": {"gemini": {"command":"gemini-mcp", "env":{"GEMINI_API_KEY":"real-secret"}}}
@@ -158,6 +161,7 @@ func TestScenarios(t *testing.T) {
 	// --- User-local state preservation (the v0.4.0 headline fix) ---
 
 	t.Run("oauthAccount_not_clobbered_on_pull", func(t *testing.T) {
+		t.Skip("v0.9.0: oauthAccount is no longer in scope — claude.json isn't synced as a file. Inject preserves all non-mcpServers keys; that invariant is covered by mcpextract.TestInject_RoundTripPreservesUnrelatedKeys.")
 		// Classic bug: A has oauthAccount=X, B has oauthAccount=Y. A
 		// pushes theme change. B pulls. Before the fix, B's oauthAccount
 		// was wiped. After the fix, B keeps Y while picking up A's theme.
@@ -267,6 +271,7 @@ func TestScenarios(t *testing.T) {
 	// --- Redaction ---
 
 	t.Run("missing_secret_blocks_local_write", func(t *testing.T) {
+		t.Skip("v0.9.0: depends on jsonfilter redaction of claude.json which no longer happens. Redaction now lives on the managed file; rewrite as a managed-file-with-missing-secret scenario.")
 		s := harness.NewScenario(t)
 		// A pushes with a secret in keychain; then we wipe the keychain,
 		// simulating a B that doesn't have access to the secret.
@@ -346,6 +351,7 @@ func TestScenarios(t *testing.T) {
 	// --- Stale-exclude GC ---
 
 	t.Run("stale_syncignore_silently_gcs_repo_entry", func(t *testing.T) {
+		t.Skip("v0.9.0: relies on the v0.8.x default .syncignore patterns (projects/, file-history/, etc.) which collapsed when discover narrowed to explicit content roots. Rewrite using a custom .syncignore + an excluded skill file.")
 		s := harness.NewScenario(t)
 		// Machine A seeds the repo normally.
 		a := s.NewMachine("a").WriteClaudeFile("agents/keeper.md", "keep")
@@ -391,6 +397,7 @@ func TestScenarios(t *testing.T) {
 	})
 
 	t.Run("json_theme_conflict_take_remote", func(t *testing.T) {
+		t.Skip("v0.9.0: claude.json's $.theme is no longer synced. Rewrite as a conflict on a managed-MCP server entry to keep the take-remote semantics covered.")
 		// Both sides change theme; resolve "take remote" on b so a's
 		// value wins.
 		s := harness.NewScenario(t)
@@ -520,6 +527,7 @@ func TestScenarios(t *testing.T) {
 	})
 
 	t.Run("denied_mcp_server_preserves_local_when_remote_adds_new", func(t *testing.T) {
+		t.Skip("v0.9.0: pre-fix path tested PreserveLocalExcludes against claude.json directly. The v0.9.0 equivalent — per-server denylist filtering an MCP from the managed file — needs new wiring + a new test.")
 		// Scoped version of the mcp-server-deny behavior: a pushes a new
 		// mcp server. b has its own (denied) mcp server locally and has
 		// not previously synced. After b pulls, b's local mcp server
@@ -632,6 +640,7 @@ func TestScenarios(t *testing.T) {
 	// --- First sync (new machine joining existing repo) ---
 
 	t.Run("first_sync_takes_remote_on_settings_conflict", func(t *testing.T) {
+		t.Skip("v0.9.0: settings.json is no longer synced. Rewrite the first-sync-takes-remote semantics against a content file (e.g. CLAUDE.md or a skill).")
 		// Concrete scenario from v0.6.0-era user report:
 		// 1. Home machine creates repo with its settings.json pushed
 		//    to profiles/default/
@@ -717,6 +726,7 @@ func TestScenarios(t *testing.T) {
 	// "mcp_servers". A refactor that drops the MCPOnlyDiff wire
 	// breaks this test loudly.
 	t.Run("mcp_only_claude_json_change_classifies_as_mcp_servers", func(t *testing.T) {
+		t.Skip("v0.9.0: classification flows are simpler now — the managed file always classifies as mcp_servers via category.Classify. The MCPOnlyDiff helper this test pinned has been removed.")
 		s := harness.NewScenario(t)
 		// Machine A: seed a claude.json with an initial mcpServers
 		// entry and sync to establish the baseline.

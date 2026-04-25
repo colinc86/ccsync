@@ -18,6 +18,7 @@ import (
 	"github.com/colinc86/ccsync/internal/ignore"
 	"github.com/colinc86/ccsync/internal/jsonfilter"
 	"github.com/colinc86/ccsync/internal/manifest"
+	"github.com/colinc86/ccsync/internal/mcpextract"
 	"github.com/colinc86/ccsync/internal/merge"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/snapshot"
@@ -64,6 +65,14 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 	repo, err := gitx.Open(in.RepoPath)
 	if err != nil {
 		return Result{}, fmt.Errorf("open repo: %w", err)
+	}
+
+	// Refuse to operate on a v0.8.x-shaped repo. The two formats are
+	// incompatible — v0.9.0 never writes whole settings/config files,
+	// and silently merging into an old layout would scatter ghost
+	// paths through the repo with no clean recovery.
+	if err := detectOldFormat(in.RepoPath); err != nil {
+		return Result{}, err
 	}
 
 	empty, err := repo.IsEmpty()
@@ -125,8 +134,7 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 
 	emit("discover", "walking local Claude config", "")
 	disc, err := discover.Walk(discover.Inputs{
-		ClaudeDir:  in.ClaudeDir,
-		ClaudeJSON: in.ClaudeJSON,
+		ClaudeDir: in.ClaudeDir,
 	}, matcher)
 	if err != nil {
 		return Result{}, err
@@ -138,6 +146,12 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 	localEntries := map[string]*localFile{}
 	for _, e := range disc.Tracked {
 		repoPath := profilePrefix + e.RelPath
+		// Honour the user's content-chunk toggles. A turned-off chunk
+		// (e.g. memory) means we neither push nor pull it; the discover
+		// walk already returned the files, but staging stops here.
+		if chunk := contentChunkForRelPath(e.RelPath); chunk != "" && !state.IsContentEnabled(chunk) {
+			continue
+		}
 		// Profile excludes — don't read the file, don't filter it, don't
 		// keyring-store any redactions it would've contained. The main loop
 		// will still surface it in the plan if it exists on the remote, via
@@ -160,6 +174,44 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			lf.isJSON = true
 		}
 		lf.sha = manifest.SHA256Bytes(lf.data)
+		localEntries[repoPath] = lf
+	}
+
+	// JSON-slice managed files. Each enabled slice extracts its
+	// subtree from the live source file and stages a managed file
+	// at profiles/<name>/<managed-path>. The diff loop treats these
+	// like any other JSON file (per-key three-way merge); the apply
+	// loop redirects pull writes through mcpextract.Inject so the
+	// source file's machine-local keys (sessionId, theme, …) stay
+	// intact.
+	for _, slice := range mcpextract.Slices() {
+		if !state.IsContentEnabled(slice.ContentChunk) {
+			continue
+		}
+		repoPath := profilePrefix + slice.ManagedPath
+		if profileExcluded(profileMatcher, repoPath, profilePrefix) {
+			continue
+		}
+		sourceAbs := sliceSourceAbs(in, slice)
+		if sourceAbs == "" {
+			continue
+		}
+		sourceBytes, readErr := os.ReadFile(sourceAbs)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return Result{}, fmt.Errorf("read %s: %w", sourceAbs, readErr)
+		}
+		managed, err := mcpextract.Extract(sourceBytes, slice.JSONPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("extract %s from %s: %w", slice.JSONPath, sourceAbs, err)
+		}
+		s := slice
+		lf := &localFile{
+			abs:          sourceAbs,
+			data:         managed,
+			isJSON:       true,
+			managedSlice: &s,
+			sha:          manifest.SHA256Bytes(managed),
+		}
 		localEntries[repoPath] = lf
 	}
 
@@ -228,6 +280,29 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 	pendingRepoWrites := map[string][]byte{}
 	pendingLocalWrites := map[string][]byte{}
 
+	// managedInjects collects pending JSON-slice injections by source
+	// file. Each managedInjectOp says "splice these bytes into this
+	// JSONPath in <source>" — multiple ops for the same source (e.g.
+	// updating both $.mcpServers and $.hooks in settings.json) compose
+	// in order. The pull loop routes managed paths here instead of into
+	// pendingLocalWrites so we can read the source once, splice all
+	// pending changes, then write the source once with everything else
+	// preserved.
+	managedInjects := map[string][]managedInjectOp{}
+	queueInject := func(sourceAbs string, slice *mcpextract.Slice, data []byte) {
+		if sourceAbs == "" || slice == nil {
+			return
+		}
+		// nil data → caller wants the slice cleared (delete-local).
+		if data == nil {
+			data = []byte("{}")
+		}
+		managedInjects[sourceAbs] = append(managedInjects[sourceAbs], managedInjectOp{
+			JSONPath: slice.JSONPath,
+			Data:     data,
+		})
+	}
+
 	for path := range allPaths {
 		var localSHA, baseSHA, remoteSHA string
 		var localData, remoteData []byte
@@ -294,20 +369,19 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		}
 		excluded := profileExcluded(profileMatcher, path, profilePrefix)
 		denied := pathDenied(state, path, profilePrefix)
-		// Route claude.json changes through the MCPServers category
-		// when the only differing top-level key is "mcpServers" —
-		// honours the user's per-category review policy so adding a
-		// new MCP server can trigger a review prompt even though
-		// other claude.json edits stay on the GeneralSettings policy.
-		// Pre-v0.6.14 this classification was hardcoded to
-		// GeneralSettings, so configuring MCPServers.push=review
-		// silently did nothing for every user who tried.
+		// Every path the discover walk or mcpextract step staged
+		// resolves to exactly one category. Empty return ("") means
+		// the path is meta (manifest.json, .syncignore, the repo
+		// README, etc.) and isn't routed through a per-category
+		// policy.
 		rel := strings.TrimPrefix(path, profilePrefix)
-		var cat string
-		if rel == "claude.json" && category.MCPOnlyDiff(localData, remoteData) {
-			cat = category.MCPServers
-		} else {
-			cat = category.Classify(rel)
+		cat := category.Classify(rel)
+		// Honour the content-chunk toggle. A chunk turned off in
+		// Settings → content disables sync of every path that maps
+		// to it, both directions. Lump into the existing "denied"
+		// flag so the review/inspector flow treats it as an opt-out.
+		if chunk := contentChunkForRelPath(rel); chunk != "" && !state.IsContentEnabled(chunk) {
+			denied = true
 		}
 		plan.Actions = append(plan.Actions, FileAction{
 			Path: path, LocalAbs: localAbs, Action: action,
@@ -334,15 +408,33 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			continue
 		}
 
+		// Detect managed-slice paths so pulls can be routed through
+		// mcpextract.Inject (preserving the source file's other keys)
+		// rather than blindly writing the slice bytes over the source.
+		var managedSlice *mcpextract.Slice
+		if le, ok := localEntries[path]; ok && le.managedSlice != nil {
+			managedSlice = le.managedSlice
+		} else if s := mcpextract.SliceByManagedPath(rel); s != nil {
+			managedSlice = s
+		}
+
 		switch action {
 		case manifest.ActionNoOp:
 			// nothing
 		case manifest.ActionAddRemote, manifest.ActionPush:
 			pendingRepoWrites[path] = localData
 		case manifest.ActionAddLocal, manifest.ActionPull:
-			pendingLocalWrites[localAbs] = remoteData
+			if managedSlice != nil {
+				queueInject(localAbs, managedSlice, remoteData)
+			} else {
+				pendingLocalWrites[localAbs] = remoteData
+			}
 		case manifest.ActionDeleteLocal:
-			pendingLocalWrites[localAbs] = nil
+			if managedSlice != nil {
+				queueInject(localAbs, managedSlice, nil)
+			} else {
+				pendingLocalWrites[localAbs] = nil
+			}
 		case manifest.ActionDeleteRemote:
 			pendingRepoWrites[path] = nil
 		case manifest.ActionMerge:
@@ -371,7 +463,9 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 				// local + remote both have content with no base.
 				if baseCommit == "" {
 					pendingRepoWrites[path] = remoteData
-					if localAbs != "" {
+					if managedSlice != nil {
+						queueInject(localAbs, managedSlice, remoteData)
+					} else if localAbs != "" {
 						pendingLocalWrites[localAbs] = remoteData
 					}
 					continue
@@ -387,7 +481,9 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 				continue
 			}
 			pendingRepoWrites[path] = merged.Merged
-			if localAbs != "" {
+			if managedSlice != nil {
+				queueInject(localAbs, managedSlice, merged.Merged)
+			} else if localAbs != "" {
 				pendingLocalWrites[localAbs] = merged.Merged
 			}
 		case manifest.ActionConflict:
@@ -396,7 +492,9 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 			if baseCommit == "" {
 				if remoteData != nil {
 					pendingRepoWrites[path] = remoteData
-					if localAbs != "" {
+					if managedSlice != nil {
+						queueInject(localAbs, managedSlice, remoteData)
+					} else if localAbs != "" {
 						pendingLocalWrites[localAbs] = remoteData
 					}
 				} else if localAbs != "" {
@@ -425,11 +523,29 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 	}
 
 	var snapID string
-	if len(pendingLocalWrites) > 0 {
+	if len(pendingLocalWrites) > 0 || len(managedInjects) > 0 {
 		emit("snapshot", "taking pre-sync snapshot", "")
-		absPaths := make([]string, 0, len(pendingLocalWrites))
+		seen := map[string]struct{}{}
+		var absPaths []string
+		add := func(p string) {
+			if p == "" {
+				return
+			}
+			if _, ok := seen[p]; ok {
+				return
+			}
+			seen[p] = struct{}{}
+			absPaths = append(absPaths, p)
+		}
 		for abs := range pendingLocalWrites {
-			absPaths = append(absPaths, abs)
+			add(abs)
+		}
+		// Source files (~/.claude.json, ~/.claude/settings.json) get
+		// snapshotted before any managed-slice inject so a botched
+		// merge can be rolled back per-file the same way regular
+		// pulls can.
+		for abs := range managedInjects {
+			add(abs)
 		}
 		snapRoot := filepath.Join(in.StateDir, "snapshots")
 		meta, err := snapshot.Take(snapRoot, "sync", in.Profile, absPaths)
@@ -441,6 +557,32 @@ func Run(ctx context.Context, in Inputs, events chan<- Event) (Result, error) {
 		// to defaults in state.SnapshotRetention().
 		keepCount, keepDays := state.SnapshotRetention()
 		_ = snapshot.Prune(snapRoot, keepCount, time.Duration(keepDays)*24*time.Hour)
+	}
+
+	// Apply managed-slice injections. For each source file with
+	// pending ops, read the live document, splice every queued slice
+	// into its named JSONPath, and write the document back. This
+	// preserves machine-local keys (sessionId, theme, oauthAccount,
+	// permissions.allow, …) that aren't part of any synced slice.
+	for sourceAbs, ops := range managedInjects {
+		current, readErr := os.ReadFile(sourceAbs)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return Result{}, fmt.Errorf("read %s for inject: %w", sourceAbs, readErr)
+		}
+		next := current
+		for _, op := range ops {
+			injected, err := mcpextract.Inject(next, op.Data, op.JSONPath)
+			if err != nil {
+				return Result{}, fmt.Errorf("inject %s into %s: %w", op.JSONPath, sourceAbs, err)
+			}
+			next = injected
+		}
+		if err := os.MkdirAll(filepath.Dir(sourceAbs), 0o755); err != nil {
+			return Result{}, err
+		}
+		if err := writeFileAtomic(sourceAbs, next); err != nil {
+			return Result{}, fmt.Errorf("write %s: %w", sourceAbs, err)
+		}
 	}
 
 	var missingSecrets []string
@@ -621,6 +763,70 @@ type localFile struct {
 	sha        string
 	isJSON     bool
 	redactions map[string]json.RawMessage
+	// managedSlice marks this entry as a JSON-slice managed file
+	// (.ccsync.mcp.json, ccsync.mcp.json, ccsync.hooks.json). When
+	// set, abs points at the underlying source file (~/.claude.json
+	// or ~/.claude/settings.json) rather than at a real on-disk
+	// equivalent of the managed file. Pulls inject the managed bytes
+	// back into abs at slice.JSONPath; the managed file itself is
+	// only ever materialised inside the repo, never on the user's
+	// disk.
+	managedSlice *mcpextract.Slice
+}
+
+// managedInjectOp is one pending splice operation against a source
+// JSON file. The pull loop appends one of these per managed slice
+// that needs writing back to its source; the apply loop reads the
+// source once, plays the ops in order, and writes the source once.
+type managedInjectOp struct {
+	JSONPath string
+	Data     []byte
+}
+
+// sliceSourceAbs returns the absolute path of the live source file
+// that the given slice extracts from. ".claude.json" maps to
+// in.ClaudeJSON; ".claude/settings.json" lives under in.ClaudeDir.
+func sliceSourceAbs(in Inputs, s mcpextract.Slice) string {
+	switch s.SourcePath {
+	case ".claude.json":
+		return in.ClaudeJSON
+	case ".claude/settings.json":
+		return filepath.Join(in.ClaudeDir, "settings.json")
+	}
+	return ""
+}
+
+// contentChunkForRelPath maps a repo-relative path (already stripped
+// of the profiles/<name>/ prefix) to its content-chunk identifier so
+// the orchestrator can honour state.IsContentEnabled before staging
+// or applying it. Empty return means the path is not gated by a
+// content toggle (meta files like manifest.json fall through).
+func contentChunkForRelPath(rel string) string {
+	switch rel {
+	case "claude/CLAUDE.md":
+		return ccstate.ContentChunkClaudeMD
+	case mcpextract.Slices()[0].ManagedPath:
+		return ccstate.ContentChunkMCPClaudeJSON
+	case mcpextract.Slices()[1].ManagedPath:
+		return ccstate.ContentChunkMCPSettingsJSON
+	case mcpextract.Slices()[2].ManagedPath:
+		return ccstate.ContentChunkHooksWiring
+	}
+	switch {
+	case strings.HasPrefix(rel, "claude/agents/"):
+		return ccstate.ContentChunkAgents
+	case strings.HasPrefix(rel, "claude/skills/"):
+		return ccstate.ContentChunkSkills
+	case strings.HasPrefix(rel, "claude/commands/"):
+		return ccstate.ContentChunkCommands
+	case strings.HasPrefix(rel, "claude/hooks/"):
+		return ccstate.ContentChunkHooks
+	case strings.HasPrefix(rel, "claude/output-styles/"):
+		return ccstate.ContentChunkOutputStyles
+	case strings.HasPrefix(rel, "claude/memory/"):
+		return ccstate.ContentChunkMemory
+	}
+	return ""
 }
 
 // mergeFile picks the right merge strategy based on path extension and content.
@@ -704,9 +910,23 @@ func loadKeyringForJSON(profile string, data []byte) (map[string]string, error) 
 }
 
 // repoPathToLocal inverts profile-prefixed repo paths back to an abs local path.
+//
+// Managed slice files (.ccsync.mcp.json, ccsync.mcp.json,
+// ccsync.hooks.json) resolve to the *source file* they're extracted
+// from — ~/.claude.json or ~/.claude/settings.json — rather than to a
+// matching disk path under ~/.claude. Pulls and conflict resolutions
+// for these paths inject through mcpextract.Inject before writing.
 func repoPathToLocal(repoPath, profile, claudeDir, claudeJSON string) string {
 	prefix := "profiles/" + profile + "/"
 	rel := strings.TrimPrefix(repoPath, prefix)
+	if slice := mcpextract.SliceByManagedPath(rel); slice != nil {
+		switch slice.SourcePath {
+		case ".claude.json":
+			return claudeJSON
+		case ".claude/settings.json":
+			return filepath.Join(claudeDir, "settings.json")
+		}
+	}
 	if rel == "claude.json" {
 		return claudeJSON
 	}

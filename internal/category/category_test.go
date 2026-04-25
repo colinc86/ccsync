@@ -2,6 +2,10 @@ package category
 
 import "testing"
 
+// TestClassify pins the post-v0.9.0 path mapping. Every path that the
+// discover walk or the mcpextract step writes to the repo must resolve
+// to a known category. Anything outside that surface returns "" — the
+// signal callers use to skip category routing entirely.
 func TestClassify(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -10,12 +14,18 @@ func TestClassify(t *testing.T) {
 		{"claude/agents/subdir/bar.md", Agents},
 		{"claude/skills/summary/SKILL.md", Skills},
 		{"claude/commands/deploy.md", Commands},
+		{"claude/hooks/pre-tool.sh", Hooks},
+		{"claude/output-styles/concise.md", OutputStyles},
 		{"claude/memory/notes.md", Memory},
 		{"claude/CLAUDE.md", ClaudeMD},
-		{"claude/settings.json", GeneralSettings},
-		{"claude.json", GeneralSettings},
-		{"claude/misc/something.sh", Other},
-		{"something-outside-claude/foo.md", Other},
+		{ManagedMCPClaudeJSONPath, MCPServers},
+		{ManagedMCPSettingsJSONPath, MCPServers},
+		{ManagedHooksPath, Hooks},
+		// Out-of-surface paths return "" — callers skip them.
+		{"claude/settings.json", ""},
+		{"claude.json", ""},
+		{"claude/misc/something.sh", ""},
+		{"something-outside-claude/foo.md", ""},
 	}
 	for _, tc := range cases {
 		if got := Classify(tc.in); got != tc.want {
@@ -24,24 +34,13 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-func TestClassifyWithMCP(t *testing.T) {
-	// claude.json with mcpOnly=true → MCPServers; false → GeneralSettings.
-	if got := ClassifyWithMCP("claude.json", true); got != MCPServers {
-		t.Errorf("mcpOnly=true should be mcp_servers, got %q", got)
-	}
-	if got := ClassifyWithMCP("claude.json", false); got != GeneralSettings {
-		t.Errorf("mcpOnly=false should be general_settings, got %q", got)
-	}
-	// Non-claude.json paths ignore the mcpOnly flag.
-	if got := ClassifyWithMCP("claude/agents/foo.md", true); got != Agents {
-		t.Errorf("mcpOnly should not affect agents path; got %q", got)
-	}
-}
-
+// TestMCPServerDiff pins the per-server diff produced from raw managed-
+// file bytes (the new format: `{"name": {...}}` rather than the old
+// `{"mcpServers": {"name": {...}}}` envelope).
 func TestMCPServerDiff(t *testing.T) {
-	base := []byte(`{"mcpServers":{"a":{"command":"xa"},"b":{"command":"xb"}}}`)
-	local := []byte(`{"mcpServers":{"a":{"command":"xa"},"b":{"command":"BB"},"c":{"command":"xc"}}}`)
-	remote := []byte(`{"mcpServers":{"a":{"command":"xa"},"b":{"command":"xb"}}}`)
+	base := []byte(`{"a":{"command":"xa"},"b":{"command":"xb"}}`)
+	local := []byte(`{"a":{"command":"xa"},"b":{"command":"BB"},"c":{"command":"xc"}}`)
+	remote := []byte(`{"a":{"command":"xa"},"b":{"command":"xb"}}`)
 
 	items := MCPServerDiff(base, local, remote)
 	byName := map[string]MCPItem{}
@@ -71,69 +70,11 @@ func TestMCPServerDiff(t *testing.T) {
 	}
 }
 
+// TestMCPServerDiffHandlesAbsent pins the empty-side behavior: nil/empty
+// bytes mean "no managed file on that side" and are equivalent to {}.
 func TestMCPServerDiffHandlesAbsent(t *testing.T) {
-	// Base absent, one side has mcpServers, the other empty.
-	items := MCPServerDiff(nil, []byte(`{"mcpServers":{"x":{"command":"y"}}}`), []byte(`{}`))
+	items := MCPServerDiff(nil, []byte(`{"x":{"command":"y"}}`), []byte(`{}`))
 	if len(items) != 1 || items[0].Name != "x" || !items[0].IsAdd() {
 		t.Errorf("expected single add-item for x; got %+v", items)
-	}
-}
-
-// TestMCPOnlyDiff pins the classifier input that decides whether a
-// claude.json change routes through the MCPServers review policy.
-// The cases cover: pure mcp edits, mcp absence-vs-presence, mixed
-// edits (mcp + other key), edits not involving mcp, and
-// malformed/empty input.
-func TestMCPOnlyDiff(t *testing.T) {
-	cases := []struct {
-		name   string
-		local  string
-		remote string
-		want   bool
-	}{
-		{
-			name:   "adds mcp server only",
-			local:  `{"theme":"dark","mcpServers":{"x":{"command":"y"}}}`,
-			remote: `{"theme":"dark"}`,
-			want:   true,
-		},
-		{
-			name:   "modifies mcp server only",
-			local:  `{"theme":"dark","mcpServers":{"x":{"command":"v2"}}}`,
-			remote: `{"theme":"dark","mcpServers":{"x":{"command":"v1"}}}`,
-			want:   true,
-		},
-		{
-			name:   "modifies theme and mcp — NOT mcp-only",
-			local:  `{"theme":"dark","mcpServers":{"x":{"command":"v2"}}}`,
-			remote: `{"theme":"light","mcpServers":{"x":{"command":"v1"}}}`,
-			want:   false,
-		},
-		{
-			name:   "modifies only theme — not mcp-related",
-			local:  `{"theme":"dark"}`,
-			remote: `{"theme":"light"}`,
-			want:   false,
-		},
-		{
-			name:   "empty remote, local adds mcp",
-			local:  `{"mcpServers":{"x":{"command":"y"}}}`,
-			remote: ``,
-			want:   true,
-		},
-		{
-			name:   "empty remote, local adds mcp + theme",
-			local:  `{"theme":"dark","mcpServers":{"x":{"command":"y"}}}`,
-			remote: ``,
-			want:   false,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := MCPOnlyDiff([]byte(c.local), []byte(c.remote))
-			if got != c.want {
-				t.Errorf("MCPOnlyDiff = %v, want %v", got, c.want)
-			}
-		})
 	}
 }

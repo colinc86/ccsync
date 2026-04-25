@@ -76,8 +76,7 @@ func SwitchAndSwap(
 		return snapshot.Meta{}, fmt.Errorf("load syncignore: %w", err)
 	}
 	disc, err := discover.Walk(discover.Inputs{
-		ClaudeDir:  claudeDir,
-		ClaudeJSON: claudeJSON,
+		ClaudeDir: claudeDir,
 	}, matcher)
 	if err != nil {
 		return snapshot.Meta{}, fmt.Errorf("walk local: %w", err)

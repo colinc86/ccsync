@@ -128,11 +128,14 @@ func (m *reviewScreenModel) rebuildGroups() {
 		}
 	}
 	// Unknown categories (shouldn't happen in practice) — append at end, sorted.
+	known := map[string]bool{}
+	for _, c := range category.All() {
+		known[c] = true
+	}
+	known[""] = true // meta files (manifest.json, README.md, etc.)
 	var tail []string
 	for c := range byCat {
-		if c != category.Agents && c != category.Skills && c != category.Commands &&
-			c != category.Memory && c != category.MCPServers && c != category.ClaudeMD &&
-			c != category.GeneralSettings && c != category.Other {
+		if !known[c] {
 			tail = append(tail, c)
 		}
 	}

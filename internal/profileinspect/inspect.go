@@ -2,7 +2,6 @@ package profileinspect
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	cryptopkg "github.com/colinc86/ccsync/internal/crypto"
 	"github.com/colinc86/ccsync/internal/discover"
 	"github.com/colinc86/ccsync/internal/ignore"
+	"github.com/colinc86/ccsync/internal/mcpextract"
 	"github.com/colinc86/ccsync/internal/secrets"
 	"github.com/colinc86/ccsync/internal/state"
 )
@@ -138,8 +138,7 @@ func walkLocal(in Inputs) (map[string]*localEntry, map[string]bool) {
 	excluded := map[string]bool{}
 	matcher := loadSyncignore(in.RepoPath, in.Config.DefaultSyncignore)
 	disc, err := discover.Walk(discover.Inputs{
-		ClaudeDir:  in.ClaudeDir,
-		ClaudeJSON: in.ClaudeJSON,
+		ClaudeDir: in.ClaudeDir,
 	}, matcher)
 	if err != nil {
 		return out, excluded
@@ -165,6 +164,38 @@ func walkLocal(in Inputs) (map[string]*localEntry, map[string]bool) {
 		// ("claude/agents/secret.md") so the rel path matches.
 		if profileMatcher != nil && profileMatcher.Matches(e.RelPath) {
 			excluded[e.RelPath] = true
+		}
+	}
+
+	// Synthesize "local" entries for the managed JSON-slice files. The
+	// sync engine reads source files (~/.claude.json, settings.json),
+	// extracts the named subtree, and writes the result to the managed
+	// path inside the repo. Inspect mirrors that to compare apples-to-
+	// apples with what the repo holds.
+	for _, slice := range mcpextract.Slices() {
+		var srcAbs string
+		switch slice.SourcePath {
+		case ".claude.json":
+			srcAbs = in.ClaudeJSON
+		case ".claude/settings.json":
+			srcAbs = filepath.Join(in.ClaudeDir, "settings.json")
+		}
+		if srcAbs == "" {
+			continue
+		}
+		srcBytes, _ := os.ReadFile(srcAbs)
+		extracted, err := mcpextract.Extract(srcBytes, slice.JSONPath)
+		if err != nil {
+			continue
+		}
+		out[slice.ManagedPath] = &localEntry{
+			AbsPath: srcAbs,
+			RelPath: slice.ManagedPath,
+			Bytes:   extracted,
+			Sha:     sha256.Sum256(extracted),
+		}
+		if profileMatcher != nil && profileMatcher.Matches(slice.ManagedPath) {
+			excluded[slice.ManagedPath] = true
 		}
 	}
 	return out, excluded
@@ -325,14 +356,12 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 
 	var items []Item
 	for rel := range seen {
-		// claude.json is special: its mcpServers keys each have an
-		// independent sync identity, so we compare per-entry
-		// instead of rubber-stamping every server with the file-
-		// level status. The settings summary still inherits the
-		// whole-file status because it's "everything in claude.json
-		// that isn't mcpServers" — if those keys drift, the
-		// summary row legitimately flips to pending-push.
-		if rel == "claude.json" {
+		// Managed JSON-slice files (.ccsync.mcp.json, ccsync.mcp.json,
+		// ccsync.hooks.json) expand into one Item per top-level entry
+		// — server name for MCP files, event name for the hook file.
+		// Per-entry status lets a single drifted server show up
+		// pending-push without contaminating the rest of the slice.
+		if slice := mcpextract.SliceByManagedPath(rel); slice != nil {
 			var localData, repoData []byte
 			if e, ok := local[rel]; ok {
 				localData = e.Bytes
@@ -340,41 +369,11 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 			if r, ok := repo[rel]; ok {
 				repoData = r
 			}
-			// File-level status for the settings summary has to
-			// honour the same redact/exclude rules the sync
-			// engine uses; otherwise the filter-excluded keys
-			// (cachedGrowthBookFeatures, autoUpdatesProtected…)
-			// register as drift and the summary row sits stuck
-			// pending-push even when every user-visible key is
-			// synced.
-			rule := jsonRules[rel]
-			fileStatus := jsonFilteredFileStatus(localData, repoData, excluded[rel], rule, profile, firstSync)
-			items = append(items, extractMCPServers(
-				localData, repoData, rule, profile, excluded[rel], rel)...)
-			summaryData := localData
-			if summaryData == nil {
-				summaryData = repoData
-			}
-			if summary := extractSettingsSummary(summaryData, fileStatus, rel); summary != nil {
-				items = append(items, *summary)
-			}
+			items = append(items, extractManagedSliceItems(slice, localData, repoData, excluded[rel], rel)...)
 			continue
 		}
 
-		// Any file covered by a jsonFiles rule (e.g.
-		// claude/settings.json) gets filter-aware comparison too —
-		// user-authored excludes like $.permissions.allow are what
-		// the sync engine uses and the inspector should mirror, or
-		// the row shows drift the engine won't act on.
 		status := statusFor(rel, local, repo, excluded, firstSync)
-		if rule, ok := jsonRules[rel]; ok && (local[rel] != nil || repo[rel] != nil) {
-			var ld, rd []byte
-			if e := local[rel]; e != nil {
-				ld = e.Bytes
-			}
-			rd = repo[rel]
-			status = jsonFilteredFileStatus(ld, rd, excluded[rel], rule, profile, firstSync)
-		}
 		// The bytes we'll extract metadata from: prefer local
 		// (most recent authoritative copy from the user's POV);
 		// fall back to repo.
@@ -387,54 +386,6 @@ func buildItems(local map[string]*localEntry, repo map[string][]byte, excluded m
 		items = append(items, itemsFrom(rel, data, status)...)
 	}
 	return items
-}
-
-// canonicalJSON returns a stable byte-form of data so equality
-// checks don't flip because of whitespace or key-order noise.
-// Unparseable input falls through as-is — the caller treats it
-// as "compare raw", which is the conservative choice.
-func canonicalJSON(data []byte) []byte {
-	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
-		return data
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return data
-	}
-	return out
-}
-
-// jsonFilteredFileStatus computes the status of a JSON-backed file
-// after running the configured jsonfilter rule over the local
-// bytes. Equivalent to statusFor for any file, but filter-aware:
-// redacted secrets and excluded machine-local keys match what the
-// sync engine actually pushes, so the row doesn't sit stuck
-// pending-push because of legitimate-by-design drift. Returns
-// StatusSynced when both sides reduce to the same bytes; the
-// usual local/repo presence cases otherwise.
-func jsonFilteredFileStatus(localData, repoData []byte, fileExcluded bool, rule config.JSONFileRule, profile string, firstSync bool) Status {
-	if fileExcluded {
-		return StatusExcluded
-	}
-	hasLocal := len(localData) > 0
-	hasRepo := len(repoData) > 0
-	switch {
-	case hasLocal && hasRepo:
-		effective := effectiveLocalForCompare(localData, rule, profile)
-		if sha256.Sum256(canonicalJSON(effective)) == sha256.Sum256(canonicalJSON(repoData)) {
-			return StatusSynced
-		}
-		if firstSync {
-			return StatusPendingPull
-		}
-		return StatusPendingPush
-	case hasLocal && !hasRepo:
-		return StatusPendingPush
-	case !hasLocal && hasRepo:
-		return StatusPendingPull
-	}
-	return StatusSynced
 }
 
 // statusFor decides the sync state of one rel-path. firstSync
@@ -466,14 +417,28 @@ func statusFor(rel string, local map[string]*localEntry, repo map[string][]byte,
 }
 
 // itemsFrom dispatches a single rel-path to the right extractor.
-// Claude's .json is handled up in buildItems because its MCP
-// servers need per-entry diffing; this function handles the simpler
-// one-file-one-item shapes.
+// Managed JSON-slice files are handled up in buildItems; this function
+// handles the simpler one-file-one-item shapes for content
+// directories.
 func itemsFrom(rel string, data []byte, status Status) []Item {
 	kind, cat := kindAndCategory(rel)
 	switch kind {
-	case KindSkill, KindCommand, KindAgent, KindMemory, KindClaudeMD:
+	case KindSkill, KindCommand, KindAgent, KindMemory, KindClaudeMD, KindOutputStyle:
 		title, desc := extractMarkdownMeta(data, rel)
+		return []Item{{
+			Title:       title,
+			Description: desc,
+			Path:        rel,
+			Bytes:       int64(len(data)),
+			Kind:        kind,
+			Status:      status,
+		}}
+	case KindHook:
+		// Hook scripts are usually shell, not markdown. Show the
+		// filename and the byte-count; the user identifies them by
+		// path more than by frontmatter.
+		title := stemOf(rel)
+		desc := humanBytes(int64(len(data)))
 		return []Item{{
 			Title:       title,
 			Description: desc,
@@ -486,7 +451,7 @@ func itemsFrom(rel string, data []byte, status Status) []Item {
 		// "Other" — opaque files. Use filename + bytes-size hint.
 		title := stemOf(rel)
 		desc := humanBytes(int64(len(data)))
-		_ = cat // reserved for future label routing
+		_ = cat
 		return []Item{{
 			Title:       title,
 			Description: desc,
@@ -518,12 +483,14 @@ func kindAndCategory(rel string) (Kind, string) {
 		return KindCommand, cat
 	case category.Agents:
 		return KindAgent, cat
+	case category.Hooks:
+		return KindHook, cat
+	case category.OutputStyles:
+		return KindOutputStyle, cat
 	case category.Memory:
 		return KindMemory, cat
 	case category.MCPServers:
 		return KindMCPServer, cat
-	case category.GeneralSettings:
-		return KindSettings, cat
 	case category.ClaudeMD:
 		return KindClaudeMD, cat
 	}
@@ -531,17 +498,18 @@ func kindAndCategory(rel string) (Kind, string) {
 }
 
 // sectionOrder is the fixed render order for the inspector. Most
-// user-facing "stuff" first (skills, commands, agents, servers),
-// then the ambient / meta categories (memory, CLAUDE.md, settings),
-// with "other" as a safety-net tail.
+// user-facing "stuff" first (skills, commands, agents, hooks, styles,
+// servers), then the ambient categories (memory, CLAUDE.md), with
+// "other" as a safety-net tail.
 var sectionOrder = []Kind{
 	KindSkill,
 	KindCommand,
 	KindAgent,
+	KindHook,
+	KindOutputStyle,
 	KindMCPServer,
 	KindMemory,
 	KindClaudeMD,
-	KindSettings,
 	KindOther,
 }
 
@@ -586,14 +554,16 @@ func labelFor(k Kind) string {
 		// inspector since that's the public-facing name Claude Code
 		// uses.
 		return "Subagents"
+	case KindHook:
+		return category.Label(category.Hooks)
+	case KindOutputStyle:
+		return category.Label(category.OutputStyles)
 	case KindMCPServer:
 		return category.Label(category.MCPServers)
 	case KindMemory:
 		return category.Label(category.Memory)
 	case KindClaudeMD:
 		return "CLAUDE.md"
-	case KindSettings:
-		return "Settings"
 	}
 	return "Other"
 }

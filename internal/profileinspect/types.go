@@ -19,9 +19,10 @@ const (
 	KindSkill Kind = iota
 	KindCommand
 	KindAgent
+	KindHook
+	KindOutputStyle
 	KindMCPServer
 	KindMemory
-	KindSettings
 	KindClaudeMD
 	KindOther
 )
@@ -37,12 +38,14 @@ func (k Kind) String() string {
 		return "command"
 	case KindAgent:
 		return "agent"
+	case KindHook:
+		return "hook"
+	case KindOutputStyle:
+		return "outputStyle"
 	case KindMCPServer:
 		return "mcp"
 	case KindMemory:
 		return "memory"
-	case KindSettings:
-		return "settings"
 	case KindClaudeMD:
 		return "claudeMD"
 	}

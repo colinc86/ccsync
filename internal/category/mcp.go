@@ -2,62 +2,23 @@ package category
 
 import "encoding/json"
 
-// MCPOnlyDiff reports whether the only top-level key that differs
-// between local and remote claude.json is "mcpServers". The sync
-// engine uses this to route changes through the MCPServers review
-// category when they're MCP-specific rather than general-settings
-// touching — which makes a user-configured
-// MCPServers.push=review policy actually fire on new MCP additions,
-// instead of getting misrouted to GeneralSettings.
-//
-// Precondition: caller has already determined local != remote (this
-// function answers "given a diff, is it mcp-only"; it doesn't return
-// true for the no-diff case). A side that's empty bytes strips to {}
-// (legitimate absent file); a side that's malformed JSON returns
-// false — we won't claim an MCP-only diff against a garbage document,
-// because the user's MCPServers-scoped push policy is the wrong
-// channel to route JSON-corruption through. The normal sync flow
-// never reaches here with malformed bytes (jsonfilter.Apply errors
-// first), but the public API is called from other paths too.
-func MCPOnlyDiff(local, remote []byte) bool {
-	l, lOK := stripMCP(local)
-	r, rOK := stripMCP(remote)
-	if !lOK || !rOK {
-		return false
-	}
-	return equalJSON(l, r)
-}
-
-// stripMCP returns (doc-without-mcpServers, ok). ok=false when data
-// was non-empty but failed to parse; ok=true for empty or valid JSON.
-func stripMCP(data []byte) (map[string]any, bool) {
-	if len(data) == 0 {
-		return map[string]any{}, true
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, false
-	}
-	delete(doc, "mcpServers")
-	return doc, true
-}
-
 // MCPServerDiff computes the per-server diff for a three-way merge of
-// ~/.claude.json. Returns the list of server-name keys whose definition
-// is new or has changed across the three sides, so the review UI can
-// show one toggle per affected server.
+// a managed MCP file (.ccsync.mcp.json or ccsync.mcp.json). Each input
+// is the raw bytes of the managed file — a JSON object whose top-level
+// keys are server names and whose values are the per-server configs:
 //
-// An item's Action reflects the visible-to-user delta (add, modify,
-// delete) from the receiving machine's perspective. For push reviews,
-// "add" means "new MCP coming from local that remote doesn't have
-// yet"; for pull reviews it flips.
+//	{"playwright": {...}, "slack": {...}}
 //
-// Any of base/local/remote may be nil. When mcpServers is absent on a
-// side it's treated as {} for comparison.
+// Returns the list of server-name keys whose value is new or has
+// changed across the three sides, so the review UI can show one toggle
+// per affected server.
+//
+// Any of base/local/remote may be nil. An empty/missing side is treated
+// as the empty object {} for comparison.
 func MCPServerDiff(base, local, remote []byte) []MCPItem {
-	bMap := decodeMCP(base)
-	lMap := decodeMCP(local)
-	rMap := decodeMCP(remote)
+	bMap := decodeServers(base)
+	lMap := decodeServers(local)
+	rMap := decodeServers(remote)
 
 	names := map[string]struct{}{}
 	for k := range lMap {
@@ -81,16 +42,12 @@ func MCPServerDiff(base, local, remote []byte) []MCPItem {
 			continue
 		}
 
-		// Classify the action from the reviewing machine's perspective.
-		// The reviewer cares about what *would change locally* or *would
-		// be pushed from local*. We include both perspectives.
-		item := MCPItem{
+		items = append(items, MCPItem{
 			Name:   name,
 			Local:  raw(lv, lOK),
 			Remote: raw(rv, rOK),
 			Base:   raw(bv, bOK),
-		}
-		items = append(items, item)
+		})
 	}
 	return items
 }
@@ -99,8 +56,8 @@ func MCPServerDiff(base, local, remote []byte) []MCPItem {
 // definition differs across sides.
 type MCPItem struct {
 	Name string
-	// The raw JSON-encoded value at $.mcpServers.<Name> on each side.
-	// Zero-length means the key is absent on that side.
+	// The raw JSON-encoded value at <Name> on each side. Zero-length
+	// means the key is absent on that side.
 	Base   []byte
 	Local  []byte
 	Remote []byte
@@ -123,7 +80,11 @@ func (it MCPItem) IsDelete() bool {
 	return len(it.Local) == 0 && len(it.Remote) > 0
 }
 
-func decodeMCP(data []byte) map[string]any {
+// decodeServers parses a raw managed-file body as a map of server name
+// to server config. Empty/malformed bytes return the empty map; the
+// caller already pre-validates upstream (mcpextract/jsonfilter), so
+// surfacing a parse error here doesn't add value.
+func decodeServers(data []byte) map[string]any {
 	if len(data) == 0 {
 		return map[string]any{}
 	}
@@ -131,11 +92,7 @@ func decodeMCP(data []byte) map[string]any {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return map[string]any{}
 	}
-	mcp, _ := doc["mcpServers"].(map[string]any)
-	if mcp == nil {
-		return map[string]any{}
-	}
-	return mcp
+	return doc
 }
 
 func equalJSON(a, b any) bool {

@@ -118,10 +118,11 @@ func applyReviewPreset(st *state.State, dir state.Direction) {
 		category.Agents,
 		category.Skills,
 		category.Commands,
+		category.Hooks,
+		category.OutputStyles,
 		category.Memory,
 		category.MCPServers,
 		category.ClaudeMD,
-		category.GeneralSettings,
 	} {
 		st.SetPolicy(cat, dir, state.PolicyReview)
 	}

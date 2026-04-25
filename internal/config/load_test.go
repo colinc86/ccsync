@@ -13,8 +13,11 @@ func TestLoadDefault(t *testing.T) {
 	if c.DefaultSyncignore == "" {
 		t.Fatal("defaultSyncignore is empty")
 	}
-	if _, ok := c.JSONFiles["~/.claude.json"]; !ok {
-		t.Fatal("~/.claude.json rule missing from embedded defaults")
+	// Post-v0.9.0: jsonFiles is intentionally empty by default. ccsync
+	// no longer tracks whole settings files; mcpextract handles the
+	// few JSON subtrees that are synced.
+	if len(c.JSONFiles) != 0 {
+		t.Errorf("default jsonFiles should be empty in v0.9.0; got %d entries", len(c.JSONFiles))
 	}
 }
 

@@ -2,136 +2,23 @@ profiles:
   default:
     description: "Primary config"
 
-jsonFiles:
-  "~/.claude.json":
-    include:
-      - $.autoUpdates
-      - $.theme
-      - $.installMethod
-      - $.companion
-      - $.mcpServers
-      - $.enabledPlugins
-      - $.claudeAiMcpEverConnected
-    exclude:
-      # The include list above is already an allow-list — keys not listed
-      # there never reach the repo. The excludes below are belt-and-
-      # suspenders: they document intent and catch regressions if someone
-      # widens include by mistake.
-      #
-      # Per-project state — paths are machine-specific and can be huge.
-      - $.projects
-      # Account / login identity — tied to whichever email is logged in on
-      # each machine. Never sync; keeps work/personal logins from colliding.
-      - $.oauthAccount
-      - $.userID
-      - $.accountUuid
-      - $.organizationUuid
-      - $.customApiKeyResponses
-      # Onboarding / discovery flags — per-machine first-run state.
-      - $.hasCompletedOnboarding
-      - $.hasCompletedProjectOnboarding
-      - $.lastOnboardingVersion
-      - $.hasSeenGADisclaimer
-      - $.hasSeenClaudeHaiku4
-      - $.hasSeenOpus4
-      - $.hasSeenSonnet4
-      - $.hasSeenReleaseNotes
-      - $.lastReleaseNotesSeen
-      - $.tipsHistory
-      # Session / startup telemetry — runtime state, not user config.
-      - $.sessionId
-      - $.lastSessionId
-      - $.currentSessionId
-      - $.firstStartTime
-      - $.lastStartTime
-      - $.startTimestamp
-      - $.startTimestamps
-      - $.numStartups
-      - $.claudeCodeFirstTokenDate
-      - $.promptQueueUseCount
-      - $.lastUsedModel
-      - $.lastUsedAt
-      - $.lastKnownVersion
-      - $.lastAutoUpdateCheck
-      - $.installedFeatures
-      - $.mcpContextUris
-      # Feature-flag / experiment caches — rebuilt on each machine.
-      - $.cachedGrowthBookFeatures
-      - $.cachedStatsigGates
-      - $.cachedStatsigExperiments
-      - $.cachedStatsigLayers
-      - $.cachedStatsigDynamicConfigs
-      - $.statsigStableId
-      - $.cachedChangelog
-      # Subscription / rate-limit state — bound to the logged-in account.
-      - $.subscriptionNoticeCount
-      - $.hasAvailableSubscription
-      - $.hasAvailableMaxSubscription
-      - $.hasReachedMaxSubscriptionLimit
-      - $.isRateLimited
-      - $.isRateLimitedWithFallback
-    redact:
-      - $.mcpServers.*.env.*
-      - $..apiKey
-      - $..token
-      - $..secret
-      - $..password
-  "~/.claude/settings.json":
-    include:
-      - $
-    exclude:
-      # Permissions grow as Claude Code prompts for each new Bash /
-      # WebFetch pattern. The entries are project- and machine-local by
-      # nature — `Bash(cd /Users/colin/specific/path:*)` on one machine
-      # means nothing on another. Syncing them causes a grinding conflict
-      # every sync because both sides keep appending different entries.
-      # Users who want a permission on every machine should grant it on
-      # each, or edit settings.json manually.
-      - $.permissions.allow
-      - $.permissions.deny
-      - $.permissions.ask
-    redact:
-      - $.statusLine.command
+# v0.9.0 stopped syncing whole config files. ~/.claude.json and
+# ~/.claude/settings.json still get touched, but only via the
+# managed JSON-slice files in internal/mcpextract — not via the
+# jsonFiles allow/exclude/redact path. The block below stays empty
+# by default; per-profile rules can still appear here for any
+# JSON files a user genuinely wants to sync wholesale.
+jsonFiles: {}
 
+# .syncignore is layered on top of the explicit content roots.
+# Each tracked directory (agents/, skills/, commands/, hooks/,
+# output-styles/, memory/) is walked, then this matcher trims
+# scratch the user almost certainly doesn't want shipping over
+# the wire (editor backups, OS-meta files). It's intentionally
+# tiny — the v0.8.x era of long exclusion lists is over now that
+# we don't try to sync the whole ~/.claude tree.
 defaultSyncignore: |
-  # ephemeral / machine-local scratch
-  .current-session-id
-  .last-seen-version
-  .last-*
   .DS_Store
-  .lock
   *.bak
-  cache-*.dat
-  cache-*.last
-  sparkline-*.dat
-  sparkline-*.last
-  statusline-mode-*
-  statusline-color-*
-  statusline-auto-sticky-*
-  statusline-command.sh
-  stats-cache.json
-  history.jsonl
-  mcp-needs-auth-cache.json
-  # runtime-state directories — regenerated per machine
-  backups/
-  cache/
-  debug/
-  downloads/
-  file-history/
-  ide/
-  logs/
-  paste-cache/
-  plugins/
-  projects/
-  session-by-ccpid/
-  session-env/
-  sessions/
-  shell-snapshots/
-  tasks/
-  telemetry/
-  todos/
-  # machine-local config override — never sync
-  settings.local.json
-  # large personal work products — opt back in per profile if desired
-  research/
-  plans/
+  *.swp
+  Thumbs.db

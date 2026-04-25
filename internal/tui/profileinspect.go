@@ -806,14 +806,16 @@ func inspectorGlyph(k profileinspect.Kind) string {
 		return theme.Primary.Render("›")
 	case profileinspect.KindAgent:
 		return theme.Secondary.Bold(true).Render("◎")
+	case profileinspect.KindHook:
+		return theme.Warn.Bold(true).Render("⤷")
+	case profileinspect.KindOutputStyle:
+		return theme.Secondary.Bold(true).Render("◐")
 	case profileinspect.KindMCPServer:
 		return theme.Warn.Bold(true).Render("⚡")
 	case profileinspect.KindMemory:
 		return theme.Subtle.Bold(true).Render("✧")
 	case profileinspect.KindClaudeMD:
 		return theme.Subtle.Bold(true).Render("📄")
-	case profileinspect.KindSettings:
-		return theme.Subtle.Bold(true).Render("⚙")
 	}
 	return theme.Subtle.Render("·")
 }

@@ -382,6 +382,10 @@ func (m *settingsModel) buildRows() {
 		// --- profiles (display; use Profiles screen to switch) ---
 		heading("profiles"),
 	}
+	// Splice the content section in after "behavior" (just before
+	// "config files"). The rows are built dynamically so the labels
+	// reflect the live state.ContentToggles values on every rebuild.
+	m.rows = spliceContentSection(m.rows, contentToggleRows(ctx))
 	var names []string
 	for k := range ctx.Config.Profiles {
 		names = append(names, k)
@@ -413,6 +417,92 @@ func heading(label string) settingRow {
 
 func display(label, val string) settingRow {
 	return settingRow{label: label, kind: kindDisplay, value: func() string { return val }}
+}
+
+// spliceContentSection inserts a "§ content" section + its toggle
+// rows immediately before the "§ config files" heading. Returning a
+// new slice keeps the buildRows callsite legible: build the static
+// rows, then weave the dynamic content block in. If the config-files
+// heading isn't found (shouldn't happen, but defensive), append the
+// content rows at the end so they at least appear.
+func spliceContentSection(rows []settingRow, content []settingRow) []settingRow {
+	if len(content) == 0 {
+		return rows
+	}
+	insertion := append([]settingRow{heading("content")}, content...)
+	for i, r := range rows {
+		if r.kind == kindDisplay && r.label == "§ config files" {
+			out := make([]settingRow, 0, len(rows)+len(insertion))
+			out = append(out, rows[:i]...)
+			out = append(out, insertion...)
+			out = append(out, rows[i:]...)
+			return out
+		}
+	}
+	return append(rows, insertion...)
+}
+
+// contentToggleRows produces the on/off + drill-down rows the
+// content section lists. Each row binds a state.ContentChunk* key to
+// state.SetContentEnabled / state.IsContentEnabled. Drill-downs are
+// delegated to selectivesync via switchTo.
+func contentToggleRows(ctx *AppContext) []settingRow {
+	type chunkSpec struct {
+		key       string
+		label     string
+		drillable bool
+	}
+	chunks := []chunkSpec{
+		{state.ContentChunkAgents, "agents", true},
+		{state.ContentChunkSkills, "skills", true},
+		{state.ContentChunkCommands, "commands", true},
+		{state.ContentChunkHooks, "hooks", true},
+		{state.ContentChunkOutputStyles, "output styles", true},
+		{state.ContentChunkMemory, "memory", false},
+		{state.ContentChunkClaudeMD, "CLAUDE.md", false},
+		{state.ContentChunkMCPClaudeJSON, "MCP servers (~/.claude.json)", true},
+		{state.ContentChunkMCPSettingsJSON, "MCP servers (~/.claude/settings.json)", true},
+		{state.ContentChunkHooksWiring, "hook wiring (~/.claude/settings.json)", true},
+	}
+	var out []settingRow
+	for _, c := range chunks {
+		c := c
+		out = append(out, settingRow{
+			label: "sync " + c.label,
+			kind:  kindBool,
+			value: func() string {
+				if ctx.State.IsContentEnabled(c.key) {
+					return theme.Good.Render("on")
+				}
+				return theme.Hint.Render("off")
+			},
+			toggle: func() error {
+				ctx.State.SetContentEnabled(c.key, !ctx.State.IsContentEnabled(c.key))
+				return state.Save(ctx.StateDir, ctx.State)
+			},
+		})
+		if !c.drillable {
+			continue
+		}
+		chunkKey := c.key
+		out = append(out, settingRow{
+			label: "  ↳ select…",
+			kind:  kindAction,
+			value: func() string {
+				if !ctx.State.IsContentEnabled(chunkKey) {
+					return theme.Hint.Render("(disabled)")
+				}
+				return theme.Hint.Render("per-item picker")
+			},
+			run: func(m *settingsModel) tea.Cmd {
+				if !ctx.State.IsContentEnabled(chunkKey) {
+					return nil
+				}
+				return switchTo(newContentSelector(m.ctx, chunkKey))
+			},
+		})
+	}
+	return out
 }
 
 func isHeading(r settingRow) bool { return strings.HasPrefix(r.label, "§ ") }

@@ -158,6 +158,74 @@ type State struct {
 	// "palette" for the ctrl+k teaching toast). Adding a tip ID to
 	// the list is the "mark as read" action.
 	TipsSeen []string `json:"tipsSeen,omitempty"`
+
+	// ContentToggles gates whether each top-level content chunk
+	// participates in sync. Empty/missing key resolves to "on" so
+	// fresh installs sync everything by default; users can flip
+	// individual chunks off in Settings → content. Canonical chunk
+	// keys are the ContentChunk* constants below.
+	ContentToggles map[string]bool `json:"contentToggles,omitempty"`
+}
+
+// Canonical content-chunk identifiers. Keep stable — these strings
+// appear in state.json and any rename is a migration.
+const (
+	ContentChunkAgents          = "agents"
+	ContentChunkSkills          = "skills"
+	ContentChunkCommands        = "commands"
+	ContentChunkHooks           = "hooks"
+	ContentChunkOutputStyles    = "output_styles"
+	ContentChunkMemory          = "memory"
+	ContentChunkClaudeMD        = "claude_md"
+	ContentChunkMCPClaudeJSON   = "mcp_claude_json"
+	ContentChunkMCPSettingsJSON = "mcp_settings_json"
+	ContentChunkHooksWiring     = "hooks_wiring"
+)
+
+// AllContentChunks returns every content-chunk key in the order the
+// Settings screen renders them. Used by the TUI to build the toggle
+// rows and by the sync engine to iterate enabled chunks.
+func AllContentChunks() []string {
+	return []string{
+		ContentChunkAgents,
+		ContentChunkSkills,
+		ContentChunkCommands,
+		ContentChunkHooks,
+		ContentChunkOutputStyles,
+		ContentChunkMemory,
+		ContentChunkClaudeMD,
+		ContentChunkMCPClaudeJSON,
+		ContentChunkMCPSettingsJSON,
+		ContentChunkHooksWiring,
+	}
+}
+
+// IsContentEnabled reports whether the named content chunk is on for
+// this machine. Empty/missing key in ContentToggles is "on" — that's
+// the default for fresh installs, and an explicit `false` is the only
+// way to disable a chunk. Unknown chunk names resolve to true so we
+// fail-open if a future chunk is referenced by older code.
+func (s *State) IsContentEnabled(chunk string) bool {
+	if s == nil {
+		return true
+	}
+	v, ok := s.ContentToggles[chunk]
+	if !ok {
+		return true
+	}
+	return v
+}
+
+// SetContentEnabled flips one content-chunk toggle. Caller is
+// responsible for persisting via state.Save.
+func (s *State) SetContentEnabled(chunk string, on bool) {
+	if s == nil {
+		return
+	}
+	if s.ContentToggles == nil {
+		s.ContentToggles = map[string]bool{}
+	}
+	s.ContentToggles[chunk] = on
 }
 
 // CategoryPolicies is the (category, direction) → policy matrix stored
@@ -165,14 +233,14 @@ type State struct {
 // State.PolicyFor so upgrading users keep v0.4.x behavior until they
 // opt in from Settings.
 type CategoryPolicies struct {
-	Agents          DirectionPolicy `json:"agents,omitempty"`
-	Skills          DirectionPolicy `json:"skills,omitempty"`
-	Commands        DirectionPolicy `json:"commands,omitempty"`
-	Memory          DirectionPolicy `json:"memory,omitempty"`
-	MCPServers      DirectionPolicy `json:"mcpServers,omitempty"`
-	ClaudeMD        DirectionPolicy `json:"claudeMD,omitempty"`
-	GeneralSettings DirectionPolicy `json:"generalSettings,omitempty"`
-	Other           DirectionPolicy `json:"other,omitempty"`
+	Agents       DirectionPolicy `json:"agents,omitempty"`
+	Skills       DirectionPolicy `json:"skills,omitempty"`
+	Commands     DirectionPolicy `json:"commands,omitempty"`
+	Hooks        DirectionPolicy `json:"hooks,omitempty"`
+	OutputStyles DirectionPolicy `json:"outputStyles,omitempty"`
+	Memory       DirectionPolicy `json:"memory,omitempty"`
+	MCPServers   DirectionPolicy `json:"mcpServers,omitempty"`
+	ClaudeMD     DirectionPolicy `json:"claudeMD,omitempty"`
 }
 
 // DirectionPolicy pairs the push and pull policies for one category.
@@ -200,10 +268,10 @@ const (
 )
 
 // PolicyFor returns the effective policy for a (category, direction)
-// pair. Unknown category names fall back to Other. Empty slots resolve
-// to auto.
+// pair. Unknown / empty category names resolve to auto so meta paths
+// (manifest.json, README.md, etc.) flow without prompting.
 func (s *State) PolicyFor(category string, dir Direction) string {
-	if s == nil {
+	if s == nil || category == "" {
 		return PolicyAuto
 	}
 	dp := s.Policies.directionPolicy(category)
@@ -222,6 +290,8 @@ func (s *State) PolicyFor(category string, dir Direction) string {
 
 // SetPolicy updates the policy for one (category, direction) pair.
 // Returns the previous value so callers can undo or log transitions.
+// Unknown category names are silently ignored — there's no Other
+// catch-all category any more.
 func (s *State) SetPolicy(category string, dir Direction, policy string) string {
 	if s == nil {
 		return ""
@@ -234,16 +304,16 @@ func (s *State) SetPolicy(category string, dir Direction, policy string) string 
 		setDir(&s.Policies.Skills, dir, policy)
 	case "commands":
 		setDir(&s.Policies.Commands, dir, policy)
+	case "hooks":
+		setDir(&s.Policies.Hooks, dir, policy)
+	case "output_styles":
+		setDir(&s.Policies.OutputStyles, dir, policy)
 	case "memory":
 		setDir(&s.Policies.Memory, dir, policy)
 	case "mcp_servers":
 		setDir(&s.Policies.MCPServers, dir, policy)
 	case "claude_md":
 		setDir(&s.Policies.ClaudeMD, dir, policy)
-	case "general_settings":
-		setDir(&s.Policies.GeneralSettings, dir, policy)
-	default:
-		setDir(&s.Policies.Other, dir, policy)
 	}
 	return prev
 }
@@ -256,16 +326,18 @@ func (p CategoryPolicies) directionPolicy(category string) DirectionPolicy {
 		return p.Skills
 	case "commands":
 		return p.Commands
+	case "hooks":
+		return p.Hooks
+	case "output_styles":
+		return p.OutputStyles
 	case "memory":
 		return p.Memory
 	case "mcp_servers":
 		return p.MCPServers
 	case "claude_md":
 		return p.ClaudeMD
-	case "general_settings":
-		return p.GeneralSettings
 	}
-	return p.Other
+	return DirectionPolicy{}
 }
 
 func setDir(dp *DirectionPolicy, dir Direction, policy string) {

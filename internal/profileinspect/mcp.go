@@ -6,126 +6,86 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/colinc86/ccsync/internal/config"
-	"github.com/colinc86/ccsync/internal/jsonfilter"
+	"github.com/colinc86/ccsync/internal/category"
+	"github.com/colinc86/ccsync/internal/mcpextract"
 )
 
-// extractMCPServers parses the mcpServers object out of local and
-// repo claude.json payloads and returns one Item per server with a
-// per-entry status — a server present and identical on both sides
-// is StatusSynced even when unrelated keys in claude.json (theme,
-// editorMode, autoUpdates) have drifted. Passing only a local copy
-// (repoData == nil) reproduces the pre-v0.8.1 "whole-file status"
-// behaviour for call sites that don't have both sides.
+// extractManagedSliceItems expands a managed JSON-slice file into one
+// Item per top-level entry. The shape works for both MCP files
+// (top-level keys = server names) and the hooks file (top-level keys
+// = tool-event names).
 //
-// Comparison happens AFTER applying the ccsync.yaml jsonFiles rule
-// for claude.json (exclude + redact) to the local bytes. Otherwise
-// a redacted secret in the repo would always diverge from the
-// real secret on disk, pinning every server with a redacted field
-// into permanent "pending push" — the v0.8.1 report shape.
-//
-// Each server's Title is the map key ("gemini-embedding"). Its
-// Description is synthesised from the `command` + first `args`
-// entry when no explicit description is on the entry — the user-
-// facing gloss is "launches `gemini-mcp`" or "runs via `npx
-// gemini-embedding`" depending on how the server is wired.
-func extractMCPServers(localData, repoData []byte, rule config.JSONFileRule, profile string, fileExcluded bool, pathPrefix string) []Item {
-	// Apply redaction/filtering so local's real secrets don't
-	// register as drift against the repo's placeholders.
-	compLocal := effectiveLocalForCompare(localData, rule, profile)
-	localServers := parseMCPServers(compLocal)
-	repoServers := parseMCPServers(repoData)
-	if len(localServers) == 0 && len(repoServers) == 0 {
+// Per-entry status lets one drifted server / event show up as
+// pending-push without dragging the rest of the slice with it.
+func extractManagedSliceItems(slice *mcpextract.Slice, localData, repoData []byte, fileExcluded bool, pathPrefix string) []Item {
+	localEntries := decodeSliceEntries(localData)
+	repoEntries := decodeSliceEntries(repoData)
+	if len(localEntries) == 0 && len(repoEntries) == 0 {
 		return nil
 	}
 
-	// Union of server names across both sides so a repo-only server
-	// surfaces as a pending pull in the inspector.
-	names := make([]string, 0, len(localServers)+len(repoServers))
-	seen := map[string]bool{}
-	for k := range localServers {
-		if !seen[k] {
-			names = append(names, k)
-			seen[k] = true
-		}
-	}
-	for k := range repoServers {
-		if !seen[k] {
-			names = append(names, k)
-			seen[k] = true
-		}
-	}
+	names := unionNames(localEntries, repoEntries)
 	sort.Strings(names)
 
-	items := make([]Item, 0, len(names))
-	for _, name := range names {
-		local, hasLocal := localServers[name]
-		repo, hasRepo := repoServers[name]
+	kind := KindMCPServer
+	if slice.JSONPath == "hooks" {
+		kind = KindHook
+	}
 
-		// Description bytes: prefer the local view (what the user
-		// has in front of them); fall back to repo when this is a
-		// pending pull.
+	out := make([]Item, 0, len(names))
+	for _, name := range names {
+		local, hasLocal := localEntries[name]
+		repo, hasRepo := repoEntries[name]
 		descBytes := local
 		if !hasLocal {
 			descBytes = repo
 		}
-
-		items = append(items, Item{
+		out = append(out, Item{
 			Title:       name,
-			Description: mcpServerDescription(descBytes),
-			Path:        pathPrefix + "#mcpServers." + name,
+			Description: sliceEntryDescription(slice, descBytes),
+			Path:        pathPrefix + "#" + name,
 			Bytes:       int64(len(descBytes)),
-			Kind:        KindMCPServer,
+			Kind:        kind,
 			Status:      mcpServerStatus(hasLocal, hasRepo, local, repo, fileExcluded),
 		})
 	}
-	return items
+	return out
 }
 
-// effectiveLocalForCompare runs the configured jsonfilter rule over
-// local claude.json bytes so comparison against the repo copy is
-// apples-to-apples. Without this, a redact rule (e.g. env secrets)
-// guarantees drift: local has the real value, repo has the
-// placeholder, and every server with a redacted field appears
-// permanently pending-push. Returns the raw input unchanged when
-// the rule is empty or filtering fails — the caller falls back to
-// the pre-v0.8.1 behaviour for those edge cases.
-func effectiveLocalForCompare(localData []byte, rule config.JSONFileRule, profile string) []byte {
-	if len(localData) == 0 {
-		return localData
-	}
-	if len(rule.Exclude) == 0 && len(rule.Redact) == 0 && len(rule.Include) == 0 {
-		return localData
-	}
-	res, err := jsonfilter.Apply(localData, rule, profile)
-	if err != nil {
-		return localData
-	}
-	return res.Data
-}
-
-// parseMCPServers pulls the raw $.mcpServers map out of a claude.json
-// payload. Nil or malformed JSON returns an empty map so callers can
-// iterate without a nil check. The values are json.RawMessage so we
-// can byte-compare entries without round-tripping through a struct
-// that might lose whitespace-sensitive ordering.
-func parseMCPServers(data []byte) map[string]json.RawMessage {
+// decodeSliceEntries parses a managed-file body (raw JSON object whose
+// keys are servers / events) into a map of name → encoded value.
+// Empty / malformed bytes return an empty map so callers can iterate
+// without nil checks.
+func decodeSliceEntries(data []byte) map[string]json.RawMessage {
 	if len(data) == 0 {
 		return nil
 	}
-	var doc struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
-	}
+	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil
 	}
-	return doc.MCPServers
+	return doc
 }
 
-// mcpServerStatus picks the per-server status from (local, repo)
-// presence + byte-equality. Mirrors statusFor's file-level logic
-// but scoped to a single $.mcpServers entry so drift elsewhere in
-// claude.json doesn't contaminate stable servers.
+func unionNames(a, b map[string]json.RawMessage) []string {
+	seen := map[string]bool{}
+	for k := range a {
+		seen[k] = true
+	}
+	for k := range b {
+		seen[k] = true
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	return out
+}
+
+// mcpServerStatus picks the per-entry status from (local, repo)
+// presence + byte-equality. Mirrors statusFor's file-level logic but
+// scoped to a single managed-file entry so drift in one server
+// doesn't contaminate stable ones.
 func mcpServerStatus(hasLocal, hasRepo bool, local, repo json.RawMessage, fileExcluded bool) Status {
 	if fileExcluded {
 		return StatusExcluded
@@ -144,10 +104,10 @@ func mcpServerStatus(hasLocal, hasRepo bool, local, repo json.RawMessage, fileEx
 	return StatusSynced
 }
 
-// mcpEntriesEqual normalises two JSON server entries and reports
-// whether they're semantically identical. Whitespace, key order,
-// and number formatting shouldn't flip an otherwise-synced server
-// into pending-push, so we round-trip through the default marshaller
+// mcpEntriesEqual normalises two JSON entries and reports whether
+// they're semantically identical. Whitespace, key order, and number
+// formatting shouldn't flip an otherwise-synced entry into
+// pending-push, so we round-trip through the default marshaller
 // before comparing.
 func mcpEntriesEqual(a, b json.RawMessage) bool {
 	var av, bv any
@@ -168,12 +128,26 @@ func mcpEntriesEqual(a, b json.RawMessage) bool {
 	return string(ab) == string(bb)
 }
 
-// mcpServerDescription formats one map value under $.mcpServers
-// into a short human-readable description. The full entry shape
-// from Claude Code can include any of: command, args, env, url,
-// type, description. We prefer an explicit description field when
-// present; otherwise synthesise from the bits most users would
-// recognise ("launches gemini-mcp", "HTTP endpoint at …").
+// sliceEntryDescription dispatches by slice kind to a per-entry one-
+// liner: MCP servers describe their command shape; hook events
+// describe how many matchers are wired. Failure modes (malformed
+// payloads, schemas we don't recognise) fall back to the generic
+// category label.
+func sliceEntryDescription(slice *mcpextract.Slice, entry json.RawMessage) string {
+	if slice == nil {
+		return ""
+	}
+	if slice.JSONPath == "hooks" {
+		return hookEventDescription(entry)
+	}
+	return mcpServerDescription(entry)
+}
+
+// mcpServerDescription formats one MCP server entry into a short
+// human-readable description. The full entry shape from Claude Code
+// can include any of: command, args, env, url, type, description.
+// Prefer the explicit description; otherwise synthesise from the
+// bits most users would recognise.
 func mcpServerDescription(entry json.RawMessage) string {
 	var m struct {
 		Description string   `json:"description"`
@@ -183,7 +157,7 @@ func mcpServerDescription(entry json.RawMessage) string {
 		Type        string   `json:"type"`
 	}
 	if err := json.Unmarshal(entry, &m); err != nil {
-		return "MCP server"
+		return category.Label(category.MCPServers)
 	}
 	if d := strings.TrimSpace(m.Description); d != "" {
 		return cleanOneLine(d, 160)
@@ -199,63 +173,26 @@ func mcpServerDescription(entry json.RawMessage) string {
 		case len(m.Args) == 0:
 			return "launches `" + m.Command + "`"
 		case m.Command == "npx" || m.Command == "npm":
-			// `npx foo-mcp` reads cleaner as "runs foo-mcp via npx"
 			return fmt.Sprintf("runs `%s` via %s", m.Args[0], m.Command)
 		default:
 			return fmt.Sprintf("launches `%s %s`", m.Command, m.Args[0])
 		}
 	}
-	return "MCP server"
+	return category.Label(category.MCPServers)
 }
 
-// extractSettingsSummary turns the non-mcpServers portion of
-// claude.json into a single Settings Item. The description
-// enumerates the top-level keys we'd sync (up to 5, plus "…N more"
-// for the rest) so the user can tell at a glance what's in the
-// payload without opening the file.
-func extractSettingsSummary(data []byte, status Status, path string) *Item {
-	if len(data) == 0 {
-		return nil
+// hookEventDescription summarises one $.hooks event entry —
+// "PreToolUse", "PostToolUse", etc. Claude Code's hook config nests
+// arrays of matchers under each event; show the matcher count so the
+// row is at least directionally informative.
+func hookEventDescription(entry json.RawMessage) string {
+	var matchers []json.RawMessage
+	if err := json.Unmarshal(entry, &matchers); err != nil || len(matchers) == 0 {
+		return "hook wiring"
 	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return &Item{
-			Title:       "Claude Code settings",
-			Description: "claude.json (couldn't parse)",
-			Path:        path,
-			Bytes:       int64(len(data)),
-			Kind:        KindSettings,
-			Status:      status,
-		}
+	noun := "matcher"
+	if len(matchers) != 1 {
+		noun = "matchers"
 	}
-	// Drop mcpServers — it gets its own Items above. Leave everything
-	// else as-is so the summary reflects what we'd actually sync.
-	delete(doc, "mcpServers")
-	if len(doc) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(doc))
-	for k := range doc {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	max := 5
-	display := keys
-	extra := 0
-	if len(display) > max {
-		display = display[:max]
-		extra = len(keys) - max
-	}
-	desc := strings.Join(display, ", ")
-	if extra > 0 {
-		desc += fmt.Sprintf(" · +%d more", extra)
-	}
-	return &Item{
-		Title:       "Claude Code settings",
-		Description: desc,
-		Path:        path,
-		Bytes:       int64(len(data)),
-		Kind:        KindSettings,
-		Status:      status,
-	}
+	return fmt.Sprintf("%d %s", len(matchers), noun)
 }

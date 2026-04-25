@@ -18,21 +18,34 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestWalkClassifies(t *testing.T) {
+// TestWalk_TracksOnlyContentRoots pins the v0.9.0 narrowing: the walk
+// returns files from the six explicit content directories plus the
+// top-level CLAUDE.md, and silently drops everything else. ~/.claude/
+// settings.json — which v0.8.x would have tracked — must NOT appear,
+// since mcpextract owns the settings.json round-trip now.
+func TestWalk_TracksOnlyContentRoots(t *testing.T) {
 	tmp := t.TempDir()
 	claudeDir := filepath.Join(tmp, ".claude")
-	claudeJSON := filepath.Join(tmp, ".claude.json")
 
-	writeFile(t, filepath.Join(claudeDir, "settings.json"), `{}`)
+	// Should be tracked — content roots + top-level CLAUDE.md.
 	writeFile(t, filepath.Join(claudeDir, "agents/foo.md"), `agent`)
+	writeFile(t, filepath.Join(claudeDir, "skills/x/SKILL.md"), `skill`)
+	writeFile(t, filepath.Join(claudeDir, "commands/deploy.md"), `cmd`)
+	writeFile(t, filepath.Join(claudeDir, "hooks/pre.sh"), `#!/bin/sh`)
+	writeFile(t, filepath.Join(claudeDir, "output-styles/concise.md"), `style`)
+	writeFile(t, filepath.Join(claudeDir, "memory/notes.md"), `note`)
+	writeFile(t, filepath.Join(claudeDir, "CLAUDE.md"), `# global instructions`)
+
+	// Should NOT be tracked — settings/cache/runtime live outside
+	// the content surface.
+	writeFile(t, filepath.Join(claudeDir, "settings.json"), `{}`)
 	writeFile(t, filepath.Join(claudeDir, "projects/p1/metrics.json"), `m`)
 	writeFile(t, filepath.Join(claudeDir, "file-history/big.bin"), `b`)
 	writeFile(t, filepath.Join(claudeDir, "plans/myplan.md"), `p`)
-	writeFile(t, claudeJSON, `{}`)
+	writeFile(t, filepath.Join(claudeDir, "telemetry/events.jsonl"), `t`)
+	writeFile(t, filepath.Join(claudeDir, "sessions/abc.json"), `s`)
 
-	m := ignore.New("projects/\nfile-history/\nplans/\n")
-
-	res, err := Walk(Inputs{ClaudeDir: claudeDir, ClaudeJSON: claudeJSON}, m)
+	res, err := Walk(Inputs{ClaudeDir: claudeDir}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,15 +54,26 @@ func TestWalkClassifies(t *testing.T) {
 	for _, e := range res.Tracked {
 		got[e.RelPath] = true
 	}
-	for _, want := range []string{"claude.json", "claude/settings.json", "claude/agents/foo.md"} {
+	for _, want := range []string{
+		"claude/CLAUDE.md",
+		"claude/agents/foo.md",
+		"claude/skills/x/SKILL.md",
+		"claude/commands/deploy.md",
+		"claude/hooks/pre.sh",
+		"claude/output-styles/concise.md",
+		"claude/memory/notes.md",
+	} {
 		if !got[want] {
 			t.Errorf("expected %q in tracked, have %v", want, keys(got))
 		}
 	}
 	for _, notWanted := range []string{
+		"claude/settings.json",
 		"claude/projects/p1/metrics.json",
 		"claude/file-history/big.bin",
 		"claude/plans/myplan.md",
+		"claude/telemetry/events.jsonl",
+		"claude/sessions/abc.json",
 	} {
 		if got[notWanted] {
 			t.Errorf("did not expect %q in tracked", notWanted)
@@ -57,7 +81,39 @@ func TestWalkClassifies(t *testing.T) {
 	}
 }
 
-func TestWalkEmptyInputs(t *testing.T) {
+// TestWalk_IgnoreRulesApplyInsideContentRoots pins that the
+// .syncignore matcher still trims scratch *inside* the tracked
+// directories — even though the surrounding tree has already been
+// narrowed.
+func TestWalk_IgnoreRulesApplyInsideContentRoots(t *testing.T) {
+	tmp := t.TempDir()
+	claudeDir := filepath.Join(tmp, ".claude")
+	writeFile(t, filepath.Join(claudeDir, "agents/foo.md"), `keep`)
+	writeFile(t, filepath.Join(claudeDir, "agents/foo.md.bak"), `drop`)
+	writeFile(t, filepath.Join(claudeDir, "skills/.DS_Store"), `drop`)
+
+	m := ignore.New("*.bak\n.DS_Store\n")
+	res, err := Walk(Inputs{ClaudeDir: claudeDir}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, e := range res.Tracked {
+		got[e.RelPath] = true
+	}
+	if !got["claude/agents/foo.md"] {
+		t.Errorf("expected agents/foo.md tracked: %v", keys(got))
+	}
+	if got["claude/agents/foo.md.bak"] {
+		t.Errorf("*.bak rule didn't filter: %v", keys(got))
+	}
+	if got["claude/skills/.DS_Store"] {
+		t.Errorf(".DS_Store rule didn't filter: %v", keys(got))
+	}
+}
+
+// TestWalk_EmptyInputs pins zero-state. No ClaudeDir → empty result.
+func TestWalk_EmptyInputs(t *testing.T) {
 	res, err := Walk(Inputs{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -67,25 +123,11 @@ func TestWalkEmptyInputs(t *testing.T) {
 	}
 }
 
-func TestWalkNoMatcherTreatsAllAsTracked(t *testing.T) {
-	tmp := t.TempDir()
-	writeFile(t, filepath.Join(tmp, ".claude/a.md"), "a")
-	res, err := Walk(Inputs{ClaudeDir: filepath.Join(tmp, ".claude")}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Tracked) != 1 {
-		t.Fatalf("expected 1 tracked, got %d", len(res.Tracked))
-	}
-}
-
-// TestWalkInTreeSymlinkIsTracked pins the common case: a symlink inside
-// ~/.claude that points at another file inside ~/.claude (e.g. a user
-// organising agents across subdirectories and aliasing for convenience)
-// MUST be returned as tracked. The iter-40 symlink-escape guard only
-// filters out symlinks whose targets resolve outside the tree; in-tree
-// links are legitimate and must still sync.
-func TestWalkInTreeSymlinkIsTracked(t *testing.T) {
+// TestWalk_InTreeSymlinkIsTracked pins the common case: a symlink
+// inside ~/.claude that points at another file inside ~/.claude must
+// be returned as tracked. The symlink-escape guard only filters out
+// links whose targets resolve outside ~/.claude.
+func TestWalk_InTreeSymlinkIsTracked(t *testing.T) {
 	tmp := t.TempDir()
 	claudeDir := filepath.Join(tmp, ".claude")
 	if err := os.MkdirAll(filepath.Join(claudeDir, "agents"), 0o755); err != nil {
@@ -116,15 +158,13 @@ func TestWalkInTreeSymlinkIsTracked(t *testing.T) {
 	}
 }
 
-// TestWalkRejectsSymlinksEscapingTree pins the iteration-40 safety net:
-// a symlink inside ~/.claude whose target resolves OUTSIDE the tree
-// must NOT be returned as a tracked file. Pre-fix, discover happily
-// listed the entry and sync.Run's os.ReadFile(AbsPath) followed the
-// symlink to read whatever was on the other end — a configuration
-// mistake (or malicious drop-in) could sync secrets from /etc, other
-// users' home dirs, or anywhere else the process had read access to.
-// Treating out-of-tree links as ignored keeps discovery hermetic.
-func TestWalkRejectsSymlinksEscapingTree(t *testing.T) {
+// TestWalk_RejectsSymlinksEscapingTree pins the safety net: a symlink
+// inside ~/.claude whose target resolves outside the tree must NOT be
+// returned as tracked. Pre-fix, sync.Run's os.ReadFile(AbsPath)
+// followed the symlink to read whatever was on the other end — a
+// configuration mistake (or malicious drop-in) could sync secrets
+// from /etc, other users' home dirs, anywhere with read access.
+func TestWalk_RejectsSymlinksEscapingTree(t *testing.T) {
 	tmp := t.TempDir()
 	claudeDir := filepath.Join(tmp, ".claude")
 	outside := filepath.Join(tmp, "outside-secret")
@@ -143,8 +183,6 @@ func TestWalkRejectsSymlinksEscapingTree(t *testing.T) {
 		t.Skipf("symlinks unsupported on this platform: %v", err)
 	}
 
-	// An in-tree symlink (target also under ~/.claude) IS allowed —
-	// this is the relative-path / organized-subtree use case.
 	innerTarget := filepath.Join(claudeDir, "agents/real.md")
 	if err := os.WriteFile(innerTarget, []byte("inside"), 0o644); err != nil {
 		t.Fatal(err)
@@ -163,7 +201,6 @@ func TestWalkRejectsSymlinksEscapingTree(t *testing.T) {
 			t.Fatal("out-of-tree symlink was returned as tracked — sync would leak content from outside ~/.claude")
 		}
 	}
-	// real.md and alias.md (in-tree link) should both appear.
 	tracked := map[string]bool{}
 	for _, e := range res.Tracked {
 		tracked[e.RelPath] = true
