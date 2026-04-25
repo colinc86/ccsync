@@ -32,6 +32,12 @@ type settingsModel struct {
 	input   textinput.Model
 	err     error
 	message string
+	// height is the terminal height as last reported by
+	// tea.WindowSizeMsg. Used by View to slice rows to a cursor-
+	// following window when the full settings list would overflow
+	// the viewport. Zero means "we haven't been told yet" and
+	// View falls back to rendering everything.
+	height int
 }
 
 type settingKind int
@@ -409,6 +415,89 @@ func (m *settingsModel) buildRows() {
 	}
 }
 
+// settingsHeadingLineCost is how many lines a "§ section" heading
+// takes when rendered: a leading blank, the bold label, and the rule
+// underneath it. Regular rows are a single line. Used by
+// fitSettingsWindow to charge headings their real line cost when
+// computing the viewport window.
+const settingsHeadingLineCost = 3
+
+// viewportRowBudget converts the current terminal height into the
+// number of lines available for the settings row block. Subtracts a
+// reservation for the surrounding chrome (app header + rule, settings
+// status / message line, footer hint, status bar) so the window
+// doesn't bleed into anything else. A zero or absurdly small height
+// (e.g. before the first WindowSizeMsg arrives) returns 0 to mean
+// "render everything" — View handles that case as a fall-through.
+func (m *settingsModel) viewportRowBudget() int {
+	const chromeReserve = 10
+	const minRows = 8
+	if m.height == 0 {
+		return 0
+	}
+	budget := m.height - chromeReserve
+	if budget < minRows {
+		budget = minRows
+	}
+	return budget
+}
+
+// fitSettingsWindow returns [start, end) — the row slice the View
+// should render so the cursor stays visible and the total rendered
+// line count fits inside lineBudget. Headings cost 3 lines each;
+// every other row costs 1.
+//
+// Algorithm: anchor at the cursor, expand outward one row at a time,
+// alternating below-then-above, charging each row's line cost against
+// the budget. Stops when either bound reaches the array edge or the
+// next add wouldn't fit. lineBudget == 0 (height not known yet) is
+// the "render everything" sentinel.
+func fitSettingsWindow(rows []settingRow, cursor, lineBudget int) (int, int) {
+	if lineBudget <= 0 || len(rows) == 0 {
+		return 0, len(rows)
+	}
+	cost := func(r settingRow) int {
+		if isHeading(r) {
+			return settingsHeadingLineCost
+		}
+		return 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	used := cost(rows[cursor])
+	start, end := cursor, cursor+1
+	// Alternate growing each side so the cursor stays roughly
+	// centered. Bias slightly toward the end (more lookahead) since
+	// users tend to scroll down through Settings.
+	for {
+		grewBelow, grewAbove := false, false
+		if end < len(rows) {
+			c := cost(rows[end])
+			if used+c <= lineBudget {
+				used += c
+				end++
+				grewBelow = true
+			}
+		}
+		if start > 0 {
+			c := cost(rows[start-1])
+			if used+c <= lineBudget {
+				used += c
+				start--
+				grewAbove = true
+			}
+		}
+		if !grewBelow && !grewAbove {
+			break
+		}
+	}
+	return start, end
+}
+
 // --- row helpers ---
 
 func heading(label string) settingRow {
@@ -648,6 +737,9 @@ func editConfigFileCmd(path string, validate bool) tea.Cmd {
 
 func (m *settingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
+		return m, nil
 	case editDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -773,7 +865,18 @@ func (m *settingsModel) View() string {
 		sb.WriteString(theme.Good.Render("✓ "+m.message) + "\n\n")
 	}
 
-	for i, r := range m.rows {
+	// Cursor-following window. The settings list grew past a single
+	// terminal screen once the v0.9.0 content section landed, so we
+	// slice rows around the cursor to the live viewport budget. When
+	// height isn't known yet (first frame, before WindowSizeMsg) we
+	// fall back to rendering everything; bubbletea redraws on the
+	// next tick with the real height.
+	start, end := fitSettingsWindow(m.rows, m.cursor, m.viewportRowBudget())
+	if start > 0 {
+		fmt.Fprintf(&sb, "%s\n", theme.Hint.Render(fmt.Sprintf("↑ %d more above", start)))
+	}
+	for i := start; i < end; i++ {
+		r := m.rows[i]
 		if isHeading(r) {
 			// Section heading + thin rule. Gives the eye clear
 			// section breaks in a screen that can run to ~40
@@ -795,6 +898,9 @@ func (m *settingsModel) View() string {
 			labelStyled = theme.Hint.Render(label)
 		}
 		fmt.Fprintf(&sb, "%s%s %s  %s\n", cursor, rowKindGlyph(r.kind), labelStyled, r.value())
+	}
+	if end < len(m.rows) {
+		fmt.Fprintf(&sb, "%s\n", theme.Hint.Render(fmt.Sprintf("↓ %d more below", len(m.rows)-end)))
 	}
 
 	if m.editing {
