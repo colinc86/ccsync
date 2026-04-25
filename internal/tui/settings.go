@@ -427,15 +427,26 @@ const settingsHeadingLineCost = 3
 // reservation for the surrounding chrome (app header + rule, settings
 // status / message line, footer hint, status bar) so the window
 // doesn't bleed into anything else. A zero or absurdly small height
-// (e.g. before the first WindowSizeMsg arrives) returns 0 to mean
-// "render everything" — View handles that case as a fall-through.
+// returns 0 to mean "render everything" — View handles that as a
+// fall-through.
+//
+// Reads from m.height (last WindowSizeMsg this screen saw) first,
+// falling back to ctx.TermHeight (the AppModel-mirrored size).
+// Settings is usually opened mid-session, by which point the initial
+// WindowSizeMsg has already passed; without the ctx fallback the
+// budget would stay 0 forever and the window collapse to "render
+// everything," which is what shipped in v0.9.1.
 func (m *settingsModel) viewportRowBudget() int {
 	const chromeReserve = 10
 	const minRows = 8
-	if m.height == 0 {
+	h := m.height
+	if h == 0 && m.ctx != nil {
+		h = m.ctx.TermHeight
+	}
+	if h == 0 {
 		return 0
 	}
-	budget := m.height - chromeReserve
+	budget := h - chromeReserve
 	if budget < minRows {
 		budget = minRows
 	}

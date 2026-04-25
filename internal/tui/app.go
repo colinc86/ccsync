@@ -92,6 +92,15 @@ type AppContext struct {
 	// manually relaunching. main() resolves the exec argv + env from
 	// the current process, so user-visible flags survive the swap.
 	RestartBinaryPath string
+
+	// TermWidth / TermHeight reflect the most recent tea.WindowSizeMsg
+	// the AppModel saw. Stashed on the shared context so screens born
+	// mid-session (e.g. Settings, opened from Home long after the
+	// initial WindowSizeMsg fires) can size their viewports without
+	// waiting for a resize. Updated by AppModel.Update on every
+	// WindowSizeMsg; screens read but never write.
+	TermWidth  int
+	TermHeight int
 }
 
 // ConfigPath returns the on-disk ccsync.yaml path. Before bootstrap, an
@@ -324,6 +333,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// Mirror onto the shared context so screens created later in
+		// the session (after this initial size message has already
+		// passed through) can still size their viewports correctly.
+		m.ctx.TermWidth = msg.Width
+		m.ctx.TermHeight = msg.Height
 	case tea.KeyMsg:
 		// While the help overlay is visible, any key dismisses it — we
 		// intentionally don't let the top screen see the keystroke so the
